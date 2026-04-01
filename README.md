@@ -47,6 +47,7 @@ Without an API key, a realistic demo analysis is shown automatically.
 | AMFI India | NAV, Scheme Names, AMC | Free (official) |
 | Simulated metrics | CAGR, Sharpe, Expense Ratio | - |
 | Claude AI | Investment insights | ~$0.01/analysis |
+|yfinance | get live market data
 
 ### Upgrading to Real Metrics (Phase 2)
 Replace the `enrich_with_metrics()` function in `data_fetcher.py` with:
