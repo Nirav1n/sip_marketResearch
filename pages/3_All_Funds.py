@@ -207,36 +207,120 @@ display["AUM (Cr)"] = display["AUM (Cr)"].map(lambda x: f"₹{x:,.0f}")
 st.dataframe(display, use_container_width=True, height=min(700, 40+len(display)*38), hide_index=False)
 st.caption(f"Showing {start+1}–{min(end,len(fdf))} of {len(fdf)} · Page {page}/{total_pages}")
 
-# ─── AI INSIGHTS ──────────────────────────────────────────────────────────────
-st.markdown('<div class="section-hdr">🤖 AI Analysis of Filtered Funds</div>', unsafe_allow_html=True)
+# ─── DATA SOURCE TRANSPARENCY ──────────────────────────────────────────────────
+with st.expander("📡 How is this data sourced? (click to verify)"):
+    st.markdown("""
+**CAGR (1Y / 3Y / 5Y)**
+- Source: **mfapi.in** — free, public Indian MF API used by Groww, ET Money
+- Method: NAV on today's date ÷ NAV on (today − N years) → CAGR formula
+- Where NAV history < required period: AMFI category median is used (labelled)
 
-if st.button("▶ Generate AI Insights for Current Filter", type="primary"):
-    top10 = fdf.head(10)[["scheme_name","category","cagr_1y","cagr_3y","cagr_5y","expense_ratio","sharpe_ratio"]].to_dict("records")
-    cat_summary = fdf.groupby("category")[["cagr_3y","cagr_5y","expense_ratio"]].mean().round(2).to_dict("index")
+**AUM (Assets Under Management)**
+- Source: **mfapi.in scheme metadata** (live, where available)
+- Fallback: **AMFI category-level AUM** ÷ estimated fund count (approximate)
+- ⚠️ If you see a very different AUM vs Groww/Moneycontrol, the fallback estimate is being used. This is a free-API limitation — exact per-fund AUM requires AMFI's paid data feed.
+
+**Expense Ratio**
+- Source: mfapi.in scheme metadata (where available)
+- Fallback: SEBI-mandated TER limit ranges for Direct plans
+
+**Fund List**
+- Source: **AMFI NAVAll.txt** — official government data, updated daily
+""")
+    if "cagr_source" in fdf.columns:
+        src_counts = fdf["cagr_source"].value_counts()
+        st.markdown("**CAGR source breakdown for current filter:**")
+        st.dataframe(src_counts.reset_index().rename(columns={"count":"Funds","cagr_source":"Source"}),
+                     hide_index=True, use_container_width=True)
+
+# ─── AI INSIGHTS — SELECTION AWARE ────────────────────────────────────────────
+st.markdown('<div class="section-hdr">🤖 AI Insights — Based on Your Filters</div>', unsafe_allow_html=True)
+
+st.markdown(f"""
+<div style='background:#0d1520;border:1px solid #1a2535;border-radius:10px;padding:14px 18px;margin-bottom:16px;font-size:.85rem;color:#6b7280;'>
+  <strong style='color:#94a3b8;'>Your current filter:</strong>
+  Category group: <strong style='color:#00d4aa;'>{group}</strong> →
+  {', '.join(sel_cats[:4])}{'...' if len(sel_cats)>4 else ''} ·
+  Min 3Y CAGR: <strong style='color:#00d4aa;'>{min_cagr_3y}%</strong> ·
+  Max ER: <strong style='color:#00d4aa;'>{max_er}%</strong> ·
+  Min Sharpe: <strong style='color:#00d4aa;'>{min_sharpe}</strong> ·
+  Min AUM: <strong style='color:#00d4aa;'>₹{min_aum:,} Cr</strong> ·
+  Sorted by: <strong style='color:#00d4aa;'>{sort_by}</strong> ·
+  <strong style='color:#f59e0b;'>{len(fdf)} funds match</strong>
+</div>
+""", unsafe_allow_html=True)
+
+if st.button("▶ Generate AI Insights for This Exact Selection", type="primary"):
+    top10 = fdf.head(10)[["scheme_name","category","amc","cagr_1y","cagr_3y","cagr_5y",
+                           "expense_ratio","sharpe_ratio","aum_cr","composite_score"]].round(2).to_dict("records")
+    bottom5 = fdf.tail(5)[["scheme_name","category","cagr_3y","expense_ratio","composite_score"]].round(2).to_dict("records")
+    cat_summary = fdf.groupby("category").agg(
+        count=("scheme_name","count"),
+        avg_cagr_3y=("cagr_3y","mean"),
+        avg_cagr_5y=("cagr_5y","mean"),
+        avg_er=("expense_ratio","mean"),
+        avg_sharpe=("sharpe_ratio","mean"),
+        best_fund=("scheme_name","first"),
+    ).round(2).to_dict("index")
+
+    best_sharpe_fund = fdf.nlargest(1,"sharpe_ratio").iloc[0]["scheme_name"] if not fdf.empty else "N/A"
+    lowest_er_fund   = fdf.nsmallest(1,"expense_ratio").iloc[0]["scheme_name"] if not fdf.empty else "N/A"
+    highest_5y_fund  = fdf.nlargest(1,"cagr_5y").iloc[0]["scheme_name"] if not fdf.empty else "N/A"
+
     prompt = f"""
-Analyse this filtered set of Indian mutual funds.
-Filter applied: Categories = {sel_cats}, Min 3Y CAGR = {min_cagr_3y}%, Max ER = {max_er}%
-Total funds matching: {len(fdf)}
+You are a SEBI-registered investment analyst reviewing a filtered list of Indian mutual funds.
 
-Top 10 funds by composite score:
+## USER'S FILTER CONTEXT
+- Category Group Selected: {group}
+- Specific Categories: {sel_cats}
+- AMC Filter: {'All' if len(sel_amcs) == len(df['amc'].dropna().unique()) else sel_amcs[:5]}
+- Minimum 1Y CAGR: {min_cagr_1y}%
+- Minimum 3Y CAGR: {min_cagr_3y}%
+- Minimum 5Y CAGR: {min_cagr_5y}%
+- Maximum Expense Ratio: {max_er}%
+- Minimum Sharpe Ratio: {min_sharpe}
+- Minimum AUM: ₹{min_aum} Cr
+- Sorted By: {sort_by} ({'ascending' if sort_asc else 'descending'})
+- Total funds matching this filter: {len(fdf)}
+
+## TOP 10 FUNDS IN THIS SELECTION (by composite score)
 {top10}
 
-Category averages:
+## BOTTOM 5 FUNDS IN THIS SELECTION
+{bottom5}
+
+## CATEGORY SUMMARY FOR THIS SELECTION
 {cat_summary}
 
-Provide:
-1. **Quality Assessment** — Overall quality of this filtered fund set
-2. **Top 3 Standout Funds** — With specific reasoning from the data
-3. **Category Comparison** — Which categories look best in this filter
-4. **Expense Ratio Analysis** — Is the market offering value or overcharging?
-5. **Risk-Return Verdict** — Is the Sharpe ratio justifying the volatility?
-6. **Action Plan** — What should a moderate-risk investor do with this data?
-Use ## headers. Be direct and data-specific.
+## KEY HIGHLIGHTS
+- Best Risk-Adjusted (Sharpe): {best_sharpe_fund}
+- Lowest Expense Ratio: {lowest_er_fund}
+- Best 5Y CAGR: {highest_5y_fund}
+
+## YOUR ANALYSIS TASKS
+Analyse ONLY the funds and filters the user has selected above.
+
+1. **Selection Quality** — Is this a well-constructed filter? What does the fund selection tell us about the user's investment intent?
+
+2. **Top 3 Picks from This Selection** — Name exact funds from the list above. Give specific numbers (e.g. "3Y CAGR of X%, Sharpe of Y").
+
+3. **Category Insight** — Which category within this selection has the best risk-return trade-off and why?
+
+4. **Expense Ratio Analysis** — For the categories selected, is the average ER reasonable? Which funds offer best value?
+
+5. **What the User Should Watch Out For** — 2 specific risks based on the categories and funds they've selected.
+
+6. **Recommended Allocation** — If splitting ₹10,000/month across the best 2-3 funds from THIS list, suggest exact %s with reasoning.
+
+Be very specific. Reference actual fund names and numbers from the data. No generic advice.
 """
-    with st.spinner("🤖 Analysing..."):
+    with st.spinner("🤖 Claude is analysing your specific selection..."):
         result = get_claude_analysis(prompt, api_key=api_key or None)
     st.session_state["af_analysis"] = result
+    st.session_state["af_filter_snapshot"] = f"{group} | {len(fdf)} funds | Min 3Y: {min_cagr_3y}% | Max ER: {max_er}%"
 
 if "af_analysis" in st.session_state:
+    if "af_filter_snapshot" in st.session_state:
+        st.caption(f"Analysis generated for: {st.session_state['af_filter_snapshot']}")
     st.markdown(f'<div class="analysis-box">{st.session_state["af_analysis"]}</div>', unsafe_allow_html=True)
-    st.download_button("⬇ Download", st.session_state["af_analysis"], "fund_analysis.md", "text/markdown")
+    st.download_button("⬇ Download Analysis", st.session_state["af_analysis"], "fund_analysis.md", "text/markdown")

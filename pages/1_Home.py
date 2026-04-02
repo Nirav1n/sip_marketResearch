@@ -23,6 +23,12 @@ def theme(fig, h=None, **kw):
         margin=dict(l=10,r=10,t=36,b=10),**({"height":h} if h else {}),**kw)
     return fig
 
+def hex_rgba(h, a=0.08):
+    """Convert #rrggbb hex to rgba(r,g,b,a) — Plotly doesn't accept 8-digit hex."""
+    h = h.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{a})"
+
 st.markdown("<h1 style='font-size:1.8rem;font-weight:700;color:#f1f5f9;margin:0 0 4px;'>📊 Market Overview</h1>",unsafe_allow_html=True)
 st.markdown("<p style='color:#4b5563;font-size:.85rem;margin:0 0 20px;'>Long-term macro view · 3-year charts · Not for day trading</p>",unsafe_allow_html=True)
 
@@ -46,29 +52,37 @@ fig_r = px.bar(rdf,x="Asset",y="1Y Return (%)",color="1Y Return (%)",
     color_continuous_scale="RdYlGn",text=rdf["1Y Return (%)"].map(lambda x:f"{x:.1f}%"),
     title="1-Year Return Comparison")
 fig_r.update_traces(textposition="outside")
-theme(fig_r,h=300); st.plotly_chart(fig_r,use_container_width=True)
+theme(fig_r,h=300)
+st.plotly_chart(fig_r,use_container_width=True)
 
 st.markdown('<div class="shdr">3-Year Index Charts</div>',unsafe_allow_html=True)
 c1,c2 = st.columns(2)
 for col,(fn,name,color) in zip([c1,c2],[(fetch_nifty50,"Nifty 50","#00d4aa"),(fetch_sensex,"Sensex","#3b82f6")]):
     df = fn(756)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df["date"],y=df["price"],fill="tozeroy",name=name,
-        line=dict(color=color,width=1.5),fillcolor=f"{color}14"))
-    theme(fig,h=280,title=f"{name} — 3Y",yaxis=dict(tickprefix="₹",tickformat=","))
-    col.plotly_chart(fig,use_container_width=True)
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["price"], fill="tozeroy", name=name,
+        line=dict(color=color, width=1.5),
+        fillcolor=hex_rgba(color),
+    ))
+    theme(fig, h=280, title=f"{name} — 3Y", yaxis=dict(tickprefix="₹", tickformat=","))
+    col.plotly_chart(fig, use_container_width=True)
 
 st.markdown('<div class="shdr">Commodities — 3 Year</div>',unsafe_allow_html=True)
 c3,c4,c5 = st.columns(3)
 for col,(fn,name,color,pre) in zip([c3,c4,c5],[
-    (fetch_gold,"Gold ₹/10g","#f59e0b","₹"),(fetch_silver,"Silver ₹/kg","#94a3b8","₹"),
+    (fetch_gold,"Gold ₹/10g","#f59e0b","₹"),
+    (fetch_silver,"Silver ₹/kg","#94a3b8","₹"),
     (fetch_crude_oil,"Brent Crude USD","#ef4444","$")]):
     df = fn(756)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df["date"],y=df["price"],fill="tozeroy",name=name,
-        line=dict(color=color,width=1.5),fillcolor=f"{color}14"))
-    theme(fig,h=260,title=f"{name} — 3Y",yaxis=dict(tickprefix=pre,tickformat=","))
-    col.plotly_chart(fig,use_container_width=True)
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["price"], fill="tozeroy", name=name,
+        line=dict(color=color, width=1.5),
+        fillcolor=hex_rgba(color),
+    ))
+    theme(fig, h=260, title=f"{name} — 3Y", yaxis=dict(tickprefix=pre, tickformat=","))
+    col.plotly_chart(fig, use_container_width=True)
 
 st.markdown('<div class="shdr">Sector Rotation Signals — 12M+ Horizon</div>',unsafe_allow_html=True)
 sigs = get_sector_rotation_signal()

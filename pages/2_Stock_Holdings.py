@@ -93,30 +93,44 @@ with c2:
 
 st.markdown(f'<div class="shdr">Rotation Tracker — {quarters[0]} to {quarters[-1]}</div>',unsafe_allow_html=True)
 if not rot.empty:
-    lq=quarters[-1]; latest=rot[rot["quarter"]==lq].drop_duplicates("ticker")
-    trend_sum=latest.merge(conv[["ticker","trend_label"]].drop_duplicates(),"left",on="ticker") if "trend_label" in rot.columns else latest
-    trend_sum=rot.drop_duplicates("ticker")[["stock_name","ticker","sector","trend_label","trend"]].sort_values("trend",ascending=False)
-    ac=trend_sum[trend_sum["trend_label"].str.contains("Accum",na=False)]
-    di=trend_sum[trend_sum["trend_label"].str.contains("Distrib",na=False)]
-    st_=trend_sum[trend_sum["trend_label"].str.contains("Stable",na=False)]
-    ca,cd,cs=st.columns(3)
-    for col,sub,lbl in [(ca,ac,"📈 Accumulating"),(cd,di,"📉 Distributing"),(cs,st_,"➡️ Stable")]:
-        col.markdown(f"**{lbl}**")
-        if not sub.empty: col.dataframe(sub[["stock_name","ticker","sector"]].head(10),hide_index=True,use_container_width=True,height=300)
+    # trend_label lives in rot, not conv — extract directly from rot
+    rot_dedup = rot.drop_duplicates("ticker")
+    has_trend = "trend_label" in rot.columns and "trend" in rot.columns
 
-    t6=conv["ticker"].head(6).tolist(); rt6=rot[rot["ticker"].isin(t6)]
+    if has_trend:
+        trend_sum = rot_dedup[["stock_name","ticker","sector","trend_label","trend"]].copy()
+        trend_sum = trend_sum.sort_values("trend", ascending=False)
+        ac = trend_sum[trend_sum["trend_label"].str.contains("Accum", na=False)]
+        di = trend_sum[trend_sum["trend_label"].str.contains("Distrib", na=False)]
+        st_ = trend_sum[trend_sum["trend_label"].str.contains("Stable", na=False)]
+        ca,cd,cs = st.columns(3)
+        for col,sub,lbl in [(ca,ac,"📈 Accumulating"),(cd,di,"📉 Distributing"),(cs,st_,"➡️ Stable")]:
+            col.markdown(f"**{lbl}**")
+            if not sub.empty:
+                col.dataframe(sub[["stock_name","ticker","sector"]].head(10),
+                    hide_index=True, use_container_width=True, height=300)
+    else:
+        st.info("Trend data not available for selected categories.")
+
+    t6 = conv["ticker"].head(6).tolist()
+    rt6 = rot[rot["ticker"].isin(t6)]
     if not rt6.empty:
-        fig3=px.line(rt6,x="quarter",y="fund_count",color="ticker",markers=True,
+        fig3 = px.line(rt6, x="quarter", y="fund_count", color="ticker", markers=True,
             title=f"Quarterly Ownership — Top 6 Stocks ({quarters[0]}→{quarters[-1]})",
             labels={"fund_count":"# Funds","quarter":"Quarter"},
             color_discrete_sequence=["#00d4aa","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#ec4899"])
-        theme(fig3,h=360); st.plotly_chart(fig3,use_container_width=True)
+        theme(fig3, h=360)
+        st.plotly_chart(fig3, use_container_width=True)
 
 st.markdown('<div class="shdr">🤖 AI Holdings Analysis</div>',unsafe_allow_html=True)
 if st.button("▶ Generate Analysis",type="primary"):
-    t10=conv.head(10)[["stock_name","sector","fund_count","funds_pct","avg_weight"]].to_dict("records")
-    acc=rot.drop_duplicates("ticker")[rot.drop_duplicates("ticker")["trend_label"].str.contains("Accum",na=False)]["stock_name"].head(5).tolist() if not rot.empty else []
-    dis=rot.drop_duplicates("ticker")[rot.drop_duplicates("ticker")["trend_label"].str.contains("Distrib",na=False)]["stock_name"].head(5).tolist() if not rot.empty else []
+    t10 = conv.head(10)[["stock_name","sector","fund_count","funds_pct","avg_weight"]].to_dict("records")
+    if not rot.empty and "trend_label" in rot.columns:
+        rot_dd = rot.drop_duplicates("ticker")
+        acc = rot_dd[rot_dd["trend_label"].str.contains("Accum",na=False)]["stock_name"].head(5).tolist()
+        dis = rot_dd[rot_dd["trend_label"].str.contains("Distrib",na=False)]["stock_name"].head(5).tolist()
+    else:
+        acc, dis = [], []
     prompt=f"""Analysing Indian mutual fund stock holdings. Categories: {selected}. Funds: {tf}. Stocks: {ts}.
 Top 10 held stocks: {t10}
 Accumulating: {acc}
@@ -124,8 +138,8 @@ Distributing: {dis}
 Quarters analysed: {quarters[0]} to {quarters[-1]}
 Tasks: 1) Fund manager consensus interpretation 2) Accumulation insight 3) Distribution warning 4) Sector concentration risk 5) 3 actionable takeaways for long-term SIP investor. Use ## headers."""
     with st.spinner("Analysing..."):
-        res=get_claude_analysis(prompt,api_key=api_key or None)
-    st.session_state["h_analysis"]=res
+        res = get_claude_analysis(prompt, api_key=api_key or None)
+    st.session_state["h_analysis"] = res
 if "h_analysis" in st.session_state:
     st.markdown(f'<div class="analysis-box">{st.session_state["h_analysis"]}</div>',unsafe_allow_html=True)
-    st.download_button("⬇ Download",st.session_state["h_analysis"],"holdings_analysis.md","text/markdown")
+    st.download_button("⬇ Download", st.session_state["h_analysis"], "holdings_analysis.md", "text/markdown")
