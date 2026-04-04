@@ -96,10 +96,46 @@ def kpi(col,lbl,val,sub=""):
     <div style='font-family:JetBrains Mono,monospace;font-size:1.5rem;font-weight:700;color:#00d4aa;margin-top:4px;'>{val}</div>
     <div style='font-size:.73rem;color:#374151;margin-top:2px;'>{sub}</div></div>""",unsafe_allow_html=True)
 kpi(k1,"Categories",len(selected)," + ".join(selected[:2])+("…" if len(selected)>2 else ""))
-kpi(k2,"Funds Analysed",tf,"across selected categories")
 kpi(k3,"Unique Stocks",ts,"in fund portfolios")
 kpi(k4,"Universal Holdings",int((conv["funds_pct"]>=80).sum()) if not conv.empty else 0,"in 80%+ of funds")
 st.markdown("<br>",unsafe_allow_html=True)
+
+# Funds Analysed KPI — interactive, opens fund list on click
+with k2:
+    st.markdown(f"""<div style='background:#0d1520;border:1px solid #1a2535;border-radius:10px;padding:14px 16px;'>
+    <div style='font-size:.68rem;color:#4b5563;text-transform:uppercase;letter-spacing:1px;'>Funds Analysed</div>
+    <div style='font-family:JetBrains Mono,monospace;font-size:1.5rem;font-weight:700;color:#00d4aa;margin-top:4px;'>{tf}</div>
+    <div style='font-size:.73rem;color:#374151;margin-top:2px;'>click below to see list</div></div>""",unsafe_allow_html=True)
+
+st.markdown("<br>",unsafe_allow_html=True)
+
+# ── Fund list expander ─────────────────────────────────────────────────────
+if tf > 0:
+    fn_col_exp = "scheme_name" if "scheme_name" in hdf.columns else "fund_name"
+    amc_col_exp = "amc_id" if "amc_id" in hdf.columns else ("amc" if "amc" in hdf.columns else None)
+    month_col_exp = "disclosure_month" if "disclosure_month" in hdf.columns else None
+
+    with st.expander(f"📋 View all {tf} funds being analysed", expanded=False):
+        fund_list_cols = [fn_col_exp]
+        if amc_col_exp: fund_list_cols.append(amc_col_exp)
+        if month_col_exp: fund_list_cols.append(month_col_exp)
+
+        fund_list_df = (
+            hdf[fund_list_cols]
+            .drop_duplicates(subset=[fn_col_exp])
+            .sort_values(fn_col_exp)
+            .reset_index(drop=True)
+        )
+        rename_map = {fn_col_exp: "Scheme Name"}
+        if amc_col_exp: rename_map[amc_col_exp] = "AMC"
+        if month_col_exp: rename_map[month_col_exp] = "Disclosure Month"
+        fund_list_df = fund_list_df.rename(columns=rename_map)
+        fund_list_df.index += 1  # 1-based index
+
+        st.dataframe(fund_list_df, use_container_width=True,
+                     height=min(500, 40 + len(fund_list_df) * 36))
+        st.caption(f"These {tf} funds are the source of the stock holdings analysis above.")
+
 
 # ── Conviction table ───────────────────────────────────────────────────────
 st.markdown('<div class="shdr">Stock Conviction Table — How Many Funds Own Each Stock</div>',unsafe_allow_html=True)
