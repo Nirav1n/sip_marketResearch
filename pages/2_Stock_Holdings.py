@@ -98,6 +98,7 @@ def kpi(col,lbl,val,sub=""):
 kpi(k1,"Categories",len(selected)," + ".join(selected[:2])+("…" if len(selected)>2 else ""))
 kpi(k3,"Unique Stocks",ts,"in fund portfolios")
 kpi(k4,"Universal Holdings",int((conv["funds_pct"]>=80).sum()) if not conv.empty else 0,"in 80%+ of funds")
+st.markdown("<br>",unsafe_allow_html=True)
 
 # Funds Analysed KPI — interactive, opens fund list on click
 with k2:
