@@ -56,6 +56,13 @@ def apply_theme(fig, height=None, **kw):
 st.markdown('<div class="hdr">⚖️ Fund Comparator</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub">Select up to 3 mutual funds · Side-by-side metrics · AI-powered verdict</div>', unsafe_allow_html=True)
 
+def safe_float(v, default=0.0):
+    try:
+        if v is None: return default
+        return float(v)
+    except:
+        return default
+
 # ─── LOAD DATA ────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def get_df(): return load_fund_data()
@@ -134,7 +141,7 @@ for i, fund in enumerate(selected_funds):
     header_cols[i+1].markdown(f"**<span style='color:{COLORS[i]};'>{short}</span>**", unsafe_allow_html=True)
 
 for label, col, suffix, higher_is_better in metrics:
-    vals = [float(f[col]) for f in selected_funds]
+    vals = [safe_float(f[col]) for f in selected_funds]
     best_idx = vals.index(max(vals) if higher_is_better else min(vals))
 
     row_cols = st.columns([2] + [1] * len(selected_funds))
@@ -177,15 +184,15 @@ with c2:
     # Radar chart
     categories_radar = ["3Y CAGR","5Y CAGR","Sharpe×10","Low Expense","Low Volatility","AUM Score"]
     fig_r = go.Figure()
-    max_aum = max(float(f["aum_cr"]) for f in selected_funds)
+    max_aum = max(safe_float(f["aum_cr"]) for f in selected_funds)
     for i, fund in enumerate(selected_funds):
         vals = [
-            min(float(fund["cagr_3y"]), 35) / 35 * 10,
-            min(float(fund["cagr_5y"]), 30) / 30 * 10,
-            min(max(float(fund["sharpe_ratio"]), 0), 3) / 3 * 10,
-            max(0, (2.5 - float(fund["expense_ratio"])) / 2.5 * 10),
-            max(0, (30 - float(fund["volatility"])) / 30 * 10),
-            float(fund["aum_cr"]) / max_aum * 10 if max_aum > 0 else 5,
+            min(safe_float(fund["cagr_3y"]), 35) / 35 * 10,
+            min(safe_float(fund["cagr_5y"]), 30) / 30 * 10,
+            min(max(safe_float(fund["sharpe_ratio"]), 0), 3) / 3 * 10,
+            max(0, (2.5 - safe_float(fund["expense_ratio"])) / 2.5 * 10),
+            max(0, (30 - safe_float(fund["volatility"])) / 30 * 10),
+            safe_float(fund["aum_cr"]) / max_aum * 10 if max_aum > 0 else 5,
         ]
         short = fund["scheme_name"][:20] + "..."
         fig_r.add_trace(go.Scatterpolar(
@@ -200,10 +207,10 @@ with c2:
 
 # ─── QUICK VERDICT ────────────────────────────────────────────────────────────
 st.markdown('<div class="section-hdr">Quick Verdict</div>', unsafe_allow_html=True)
-best_composite = max(selected_funds, key=lambda x: float(x["composite_score"]))
-best_return = max(selected_funds, key=lambda x: float(x["cagr_3y"]))
-best_sharpe = max(selected_funds, key=lambda x: float(x["sharpe_ratio"]))
-cheapest = min(selected_funds, key=lambda x: float(x["expense_ratio"]))
+best_composite = max(selected_funds, key=lambda x: safe_float(x["composite_score"]))
+best_return = max(selected_funds, key=lambda x: safe_float(x["cagr_3y"]))
+best_sharpe = max(selected_funds, key=lambda x: safe_float(x["sharpe_ratio"]))
+cheapest = min(selected_funds, key=lambda x: safe_float(x["expense_ratio"]))
 
 v1,v2,v3,v4 = st.columns(4)
 def verdict_card(col, emoji, label, fund_name, color):
@@ -227,10 +234,10 @@ if st.button("▶ Generate AI Fund Comparison", type="primary"):
     for f in selected_funds:
         fund_data.append({
             "name": f["scheme_name"], "category": f["category"], "amc": f["amc"],
-            "cagr_1y": float(f["cagr_1y"]), "cagr_3y": float(f["cagr_3y"]), "cagr_5y": float(f["cagr_5y"]),
-            "expense_ratio": float(f["expense_ratio"]), "sharpe_ratio": float(f["sharpe_ratio"]),
-            "volatility": float(f["volatility"]), "aum_cr": float(f["aum_cr"]),
-            "composite_score": float(f["composite_score"]),
+            "cagr_1y": safe_float(f["cagr_1y"]), "cagr_3y": safe_float(f["cagr_3y"]), "cagr_5y": safe_float(f["cagr_5y"]),
+            "expense_ratio": safe_float(f["expense_ratio"]), "sharpe_ratio": safe_float(f["sharpe_ratio"]),
+            "volatility": safe_float(f["volatility"]), "aum_cr": safe_float(f["aum_cr"]),
+            "composite_score": safe_float(f["composite_score"]),
         })
 
     prompt = f"""

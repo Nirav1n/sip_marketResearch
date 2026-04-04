@@ -197,7 +197,9 @@ def build_stock_conviction_table(holdings_df: pd.DataFrame, selected_categories:
     )
     grp = grp.sort_values("fund_count",ascending=False).reset_index(drop=True)
     grp.index = grp.index+1
-    return grp.reset_index().rename(columns={"index":"rank", "sector_normalised": "sector"})
+    grp = grp.reset_index().rename(columns={"index":"rank"})
+    grp["sector"] = grp["sector_normalised"]
+    return grp
 
 
 def build_rotation_data(selected_categories: List[str]) -> pd.DataFrame:

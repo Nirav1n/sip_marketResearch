@@ -27,7 +27,7 @@ from datetime import datetime, date
 from typing import Optional
 from bs4 import BeautifulSoup
 
-from amc_registry import AMC_REGISTRY, get_active_amcs, MONTH_YYYY_MM
+from amc_registry import AMC_REGISTRY, get_active_amcs, get_amc_url
 from holdings_db import (
     init_db, insert_holdings, log_scrape, get_db_stats, DB_PATH
 )
@@ -42,6 +42,8 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/vnd.ms-excel,"
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*",
     "Accept-Language": "en-IN,en;q=0.9",
+    "Referer": "https://www.amfiindia.com/",
+    "Origin": "https://www.amfiindia.com",
 }
 TIMEOUT = 30
 RATE_LIMIT_SECS = 2.0  # polite delay between AMC requests
@@ -413,7 +415,7 @@ def scrape_amc(
     print(f"🏢 {amc['name']} [{amc['amc_id']}] (Tier {amc['tier']})")
 
     # Step 1: Get the file URL
-    file_url = amc.get("file_pattern")
+    file_url = get_amc_url(amc, disclosure_month)
 
     if not file_url:
         print(f"   🔍 Discovering Excel URL from {amc['portfolio_url']}")
@@ -427,16 +429,27 @@ def scrape_amc(
         return log
 
     log["file_url"] = file_url
-    print(f"   🔗 URL: {file_url[:80]}...")
+    print(f"   🔗 Candidate URL: {file_url[:80]}...")
 
     if dry_run:
         log["status"] = "dry_run"
         print(f"   ✅ Dry run — skipping download")
         return log
 
-    # Step 2: Download file
+    # Step 2: Download file (with fallback discovery on failure)
     try:
         resp = requests.get(file_url, headers=HEADERS, timeout=TIMEOUT)
+        
+        # If direct link fails (404 or 403), try discovery as fallback
+        if resp.status_code in [403, 404]:
+            print(f"   ⚠️  Direct link failed ({resp.status_code}). Trying discovery fallback...")
+            discovered_url = discover_excel_url(amc, disclosure_month)
+            if discovered_url and discovered_url != file_url:
+                print(f"   ✨ Found new URL via discovery: {discovered_url[:80]}...")
+                file_url = discovered_url
+                log["file_url"] = file_url
+                resp = requests.get(file_url, headers=HEADERS, timeout=TIMEOUT)
+        
         resp.raise_for_status()
 
         file_bytes = resp.content
@@ -526,7 +539,7 @@ def run_scrape(
     """
     Main scrape runner.
     """
-    month = disclosure_month or MONTH_YYYY_MM
+    month = disclosure_month or datetime.now().strftime("%Y-%m")
     print(f"\n{'='*60}")
     print(f"🚀 AMFI Holdings Scraper — {month}")
     print(f"{'='*60}")

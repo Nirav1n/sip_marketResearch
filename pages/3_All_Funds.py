@@ -8,11 +8,12 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-import sys, os
+import math, sys, os
+from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from data_fetcher import load_fund_data, EQUITY_CATEGORIES
-from claude_analyst import get_claude_analysis
+from claude_analyst import get_claude_analysis, build_fund_filter_prompt
 
 st.set_page_config(page_title="All Mutual Funds", page_icon="📋", layout="wide")
 
@@ -91,15 +92,15 @@ if "All AMCs" in sel_amcs or not sel_amcs: sel_amcs = all_amcs
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Performance Filters**")
 min_cagr_1y = st.sidebar.slider("Min 1Y CAGR (%)", -20, 60, 0)
-min_cagr_3y = st.sidebar.slider("Min 3Y CAGR (%)", -10, 40, 5)
-min_cagr_5y = st.sidebar.slider("Min 5Y CAGR (%)", -5, 35, 5)
+min_cagr_3y = st.sidebar.slider("Min 3Y CAGR (%)", -10, 40, 0)
+min_cagr_5y = st.sidebar.slider("Min 5Y CAGR (%)", -5, 35, 0)
 
 st.sidebar.markdown("**Risk Filters**")
 max_er = st.sidebar.slider("Max Expense Ratio (%)", 0.1, 2.5, 1.5, step=0.05)
-min_sharpe = st.sidebar.slider("Min Sharpe Ratio", -1.0, 3.0, 0.0, step=0.1)
+min_sharpe = st.sidebar.slider("Min Sharpe Ratio", -1.0, 3.0, -0.5, step=0.1)
 
 st.sidebar.markdown("**AUM Filter**")
-min_aum = st.sidebar.number_input("Min AUM (₹ Cr)", 0, 100000, 100, step=100)
+min_aum = st.sidebar.number_input("Min AUM (₹ Cr)", 0, 100000, 0, step=100)
 
 sort_by = st.sidebar.selectbox("Sort By", ["composite_score","cagr_3y","cagr_5y","cagr_1y","sharpe_ratio","expense_ratio","aum_cr"])
 sort_asc = st.sidebar.checkbox("Sort Ascending", False)
@@ -113,7 +114,7 @@ fdf = df[
     (df["cagr_5y"] >= min_cagr_5y) &
     (df["expense_ratio"] <= max_er) &
     (df["sharpe_ratio"] >= min_sharpe) &
-    (df["aum_cr"] >= min_aum)
+    (df["aum_cr"].fillna(0) >= min_aum)
 ].copy().sort_values(sort_by, ascending=sort_asc).reset_index(drop=True)
 
 # ─── KPI ROW ──────────────────────────────────────────────────────────────────
@@ -125,10 +126,11 @@ def kpi(col, label, val, color="#00d4aa"):
     </div>""", unsafe_allow_html=True)
 
 kpi(c1,"Funds Shown", len(fdf))
-kpi(c2,"Avg 1Y CAGR", f"{fdf['cagr_1y'].mean():.1f}%" if not fdf.empty else "—")
-kpi(c3,"Avg 3Y CAGR", f"{fdf['cagr_3y'].mean():.1f}%" if not fdf.empty else "—", "#3b82f6")
-kpi(c4,"Avg 5Y CAGR", f"{fdf['cagr_5y'].mean():.1f}%" if not fdf.empty else "—", "#f59e0b")
-kpi(c5,"Best Sharpe", f"{fdf['sharpe_ratio'].max():.2f}" if not fdf.empty else "—", "#8b5cf6")
+kpi(c2,"AMCs", fdf["amc"].nunique() if not fdf.empty else 0, "#3b82f6")
+kpi(c3,"Avg 1Y CAGR", f"{fdf['cagr_1y'].mean():.1f}%" if not fdf.empty else "—")
+kpi(c4,"Avg 3Y CAGR", f"{fdf['cagr_3y'].mean():.1f}%" if not fdf.empty else "—", "#f59e0b")
+aum_available = fdf["aum_cr"].notna().sum() if not fdf.empty else 0
+kpi(c5,"Real AUM Data", f"{aum_available} funds", "#8b5cf6" if aum_available > 0 else "#374151")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -141,8 +143,13 @@ st.markdown('<div class="section-hdr">Performance Landscape</div>', unsafe_allow
 c1, c2 = st.columns(2)
 
 with c1:
+    # Fill NaN so plotly scatter doesn't crash on missing AUM / CAGR values
+    scatter_df = fdf.head(100).copy()
+    scatter_df["aum_cr"]  = scatter_df["aum_cr"].fillna(1).clip(lower=1)
+    scatter_df["cagr_3y"] = scatter_df["cagr_3y"].fillna(0)
+    scatter_df["cagr_5y"] = scatter_df["cagr_5y"].fillna(0)
     fig = px.scatter(
-        fdf.head(100), x="cagr_3y", y="cagr_5y", color="category", size="aum_cr",
+        scatter_df, x="cagr_3y", y="cagr_5y", color="category", size="aum_cr",
         hover_data=["scheme_name","expense_ratio","sharpe_ratio"],
         title="3Y vs 5Y CAGR (bubble = AUM)",
         color_discrete_sequence=["#00d4aa","#3b82f6","#f59e0b","#ef4444","#8b5cf6",
@@ -167,8 +174,12 @@ with c2:
 
 # ─── EXPENSE RATIO vs RETURN ──────────────────────────────────────────────────
 st.markdown('<div class="section-hdr">Expense Ratio vs 3Y Return</div>', unsafe_allow_html=True)
+scatter_df3 = fdf.head(150).copy()
+scatter_df3["aum_cr"]       = scatter_df3["aum_cr"].fillna(1).clip(lower=1)
+scatter_df3["cagr_3y"]      = scatter_df3["cagr_3y"].fillna(0)
+scatter_df3["expense_ratio"] = scatter_df3["expense_ratio"].fillna(0)
 fig3 = px.scatter(
-    fdf.head(150), x="expense_ratio", y="cagr_3y", color="category",
+    scatter_df3, x="expense_ratio", y="cagr_3y", color="category",
     size="aum_cr", hover_data=["scheme_name","sharpe_ratio"],
     title="Does lower expense ratio → better returns?",
     labels={"expense_ratio":"Expense Ratio (%)","cagr_3y":"3Y CAGR (%)"},
@@ -200,38 +211,33 @@ display = page_df[[
 display.columns = ["Fund Name","Category","AMC","1Y CAGR%","3Y CAGR%","5Y CAGR%",
                    "Exp Ratio%","Sharpe","AUM (Cr)","Score"]
 for c in ["1Y CAGR%","3Y CAGR%","5Y CAGR%","Exp Ratio%"]:
-    display[c] = display[c].map(lambda x: f"{x:.2f}%")
-display["Sharpe"] = display["Sharpe"].map(lambda x: f"{x:.3f}")
-display["AUM (Cr)"] = display["AUM (Cr)"].map(lambda x: f"₹{x:,.0f}")
+    display[c] = display[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "—")
+display["Sharpe"] = display["Sharpe"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "—")
+# AUM: show real value or "—" — no estimates
+display["AUM (Cr)"] = display["AUM (Cr)"].map(
+    lambda x: f"₹{x:,.0f}" if pd.notna(x) and x > 0 else "—"
+)
 
 st.dataframe(display, use_container_width=True, height=min(700, 40+len(display)*38), hide_index=False)
-st.caption(f"Showing {start+1}–{min(end,len(fdf))} of {len(fdf)} · Page {page}/{total_pages}")
+st.caption(f"Showing {start+1}–{min(end,len(fdf))} of {len(fdf)} · Page {page}/{total_pages} · AUM shown only from real factsheets (— = not yet available)")
 
 # ─── DATA SOURCE TRANSPARENCY ──────────────────────────────────────────────────
-with st.expander("📡 How is this data sourced? (click to verify)"):
-    st.markdown("""
-**CAGR (1Y / 3Y / 5Y)**
-- Source: **mfapi.in** — free, public Indian MF API used by Groww, ET Money
-- Method: NAV on today's date ÷ NAV on (today − N years) → CAGR formula
-- Where NAV history < required period: AMFI category median is used (labelled)
+cagr_real = (fdf.get("cagr_source","") == "mfapi NAV history (real)").sum() if "cagr_source" in fdf.columns else 0
+aum_real = fdf["aum_cr"].notna().sum()
+with st.expander(f"📡 Data sources — {cagr_real} real CAGR | {aum_real} real AUM | click to verify"):
+    st.markdown(f"""
+**Fund list**: AMFI NAVAll.txt — all {df['amc'].nunique()} AMCs, all equity Direct Growth plans, updated daily.
 
-**AUM (Assets Under Management)**
-- Source: **mfapi.in scheme metadata** (live, where available)
-- Fallback: **AMFI category-level AUM** ÷ estimated fund count (approximate)
-- ⚠️ If you see a very different AUM vs Groww/Moneycontrol, the fallback estimate is being used. This is a free-API limitation — exact per-fund AUM requires AMFI's paid data feed.
+**CAGR (1Y/3Y/5Y)**: mfapi.in NAV history. Real arithmetic from actual NAV data.
+- Real data: **{cagr_real} funds** in current filter
+- Category median fallback: **{len(fdf)-cagr_real} funds** (labelled "AMFI category median")
 
-**Expense Ratio**
-- Source: mfapi.in scheme metadata (where available)
-- Fallback: SEBI-mandated TER limit ranges for Direct plans
+**AUM**: Only from AMC monthly factsheet Excel (scraped by `amfi_scraper.py`).
+- Real AUM available: **{aum_real} funds** | Blank (—): not yet scraped
+- Run `python amfi_scraper.py --tier 1` to populate real AUM
 
-**Fund List**
-- Source: **AMFI NAVAll.txt** — official government data, updated daily
+**Expense Ratio**: mfapi metadata where available, SEBI TER range estimate otherwise.
 """)
-    if "cagr_source" in fdf.columns:
-        src_counts = fdf["cagr_source"].value_counts()
-        st.markdown("**CAGR source breakdown for current filter:**")
-        st.dataframe(src_counts.reset_index().rename(columns={"count":"Funds","cagr_source":"Source"}),
-                     hide_index=True, use_container_width=True)
 
 # ─── AI INSIGHTS — SELECTION AWARE ────────────────────────────────────────────
 st.markdown('<div class="section-hdr">🤖 AI Insights — Based on Your Filters</div>', unsafe_allow_html=True)
@@ -245,82 +251,52 @@ st.markdown(f"""
   Max ER: <strong style='color:#00d4aa;'>{max_er}%</strong> ·
   Min Sharpe: <strong style='color:#00d4aa;'>{min_sharpe}</strong> ·
   Min AUM: <strong style='color:#00d4aa;'>₹{min_aum:,} Cr</strong> ·
-  Sorted by: <strong style='color:#00d4aa;'>{sort_by}</strong> ·
   <strong style='color:#f59e0b;'>{len(fdf)} funds match</strong>
 </div>
 """, unsafe_allow_html=True)
 
-if st.button("▶ Generate AI Insights for This Exact Selection", type="primary"):
-    top10 = fdf.head(10)[["scheme_name","category","amc","cagr_1y","cagr_3y","cagr_5y",
-                           "expense_ratio","sharpe_ratio","aum_cr","composite_score"]].round(2).to_dict("records")
-    bottom5 = fdf.tail(5)[["scheme_name","category","cagr_3y","expense_ratio","composite_score"]].round(2).to_dict("records")
-    cat_summary = fdf.groupby("category").agg(
-        count=("scheme_name","count"),
-        avg_cagr_3y=("cagr_3y","mean"),
-        avg_cagr_5y=("cagr_5y","mean"),
-        avg_er=("expense_ratio","mean"),
-        avg_sharpe=("sharpe_ratio","mean"),
-        best_fund=("scheme_name","first"),
-    ).round(2).to_dict("index")
+if st.button("▶ Get Advisor Analysis for This Exact Selection", type="primary"):
+    if fdf.empty:
+        st.warning("No funds match your filters. Relax the criteria first.")
+    else:
+        top10 = fdf.head(10)[["scheme_name","category","amc","cagr_1y","cagr_3y","cagr_5y",
+                               "expense_ratio","sharpe_ratio","aum_cr","composite_score"]].round(2).to_dict("records")
+        bottom5 = fdf.tail(5)[["scheme_name","category","cagr_3y","expense_ratio","composite_score"]].round(2).to_dict("records")
+        cat_summary = fdf.groupby("category").agg(
+            count=("scheme_name","count"),
+            avg_cagr_3y=("cagr_3y","mean"),
+            avg_cagr_5y=("cagr_5y","mean"),
+            avg_er=("expense_ratio","mean"),
+            avg_sharpe=("sharpe_ratio","mean"),
+        ).round(2).to_dict("index")
+        best_sharpe_fund = fdf.nlargest(1,"sharpe_ratio").iloc[0]["scheme_name"]
+        lowest_er_fund   = fdf.nsmallest(1,"expense_ratio").iloc[0]["scheme_name"]
+        highest_5y_fund  = fdf.nlargest(1,"cagr_5y").iloc[0]["scheme_name"]
 
-    best_sharpe_fund = fdf.nlargest(1,"sharpe_ratio").iloc[0]["scheme_name"] if not fdf.empty else "N/A"
-    lowest_er_fund   = fdf.nsmallest(1,"expense_ratio").iloc[0]["scheme_name"] if not fdf.empty else "N/A"
-    highest_5y_fund  = fdf.nlargest(1,"cagr_5y").iloc[0]["scheme_name"] if not fdf.empty else "N/A"
-
-    prompt = f"""
-You are a SEBI-registered investment analyst reviewing a filtered list of Indian mutual funds.
-
-## USER'S FILTER CONTEXT
-- Category Group Selected: {group}
-- Specific Categories: {sel_cats}
-- AMC Filter: {'All' if len(sel_amcs) == len(df['amc'].dropna().unique()) else sel_amcs[:5]}
-- Minimum 1Y CAGR: {min_cagr_1y}%
-- Minimum 3Y CAGR: {min_cagr_3y}%
-- Minimum 5Y CAGR: {min_cagr_5y}%
-- Maximum Expense Ratio: {max_er}%
-- Minimum Sharpe Ratio: {min_sharpe}
-- Minimum AUM: ₹{min_aum} Cr
-- Sorted By: {sort_by} ({'ascending' if sort_asc else 'descending'})
-- Total funds matching this filter: {len(fdf)}
-
-## TOP 10 FUNDS IN THIS SELECTION (by composite score)
-{top10}
-
-## BOTTOM 5 FUNDS IN THIS SELECTION
-{bottom5}
-
-## CATEGORY SUMMARY FOR THIS SELECTION
-{cat_summary}
-
-## KEY HIGHLIGHTS
-- Best Risk-Adjusted (Sharpe): {best_sharpe_fund}
-- Lowest Expense Ratio: {lowest_er_fund}
-- Best 5Y CAGR: {highest_5y_fund}
-
-## YOUR ANALYSIS TASKS
-Analyse ONLY the funds and filters the user has selected above.
-
-1. **Selection Quality** — Is this a well-constructed filter? What does the fund selection tell us about the user's investment intent?
-
-2. **Top 3 Picks from This Selection** — Name exact funds from the list above. Give specific numbers (e.g. "3Y CAGR of X%, Sharpe of Y").
-
-3. **Category Insight** — Which category within this selection has the best risk-return trade-off and why?
-
-4. **Expense Ratio Analysis** — For the categories selected, is the average ER reasonable? Which funds offer best value?
-
-5. **What the User Should Watch Out For** — 2 specific risks based on the categories and funds they've selected.
-
-6. **Recommended Allocation** — If splitting ₹10,000/month across the best 2-3 funds from THIS list, suggest exact %s with reasoning.
-
-Be very specific. Reference actual fund names and numbers from the data. No generic advice.
-"""
-    with st.spinner("🤖 Claude is analysing your specific selection..."):
-        result = get_claude_analysis(prompt, api_key=api_key or None)
-    st.session_state["af_analysis"] = result
-    st.session_state["af_filter_snapshot"] = f"{group} | {len(fdf)} funds | Min 3Y: {min_cagr_3y}% | Max ER: {max_er}%"
+        prompt = build_fund_filter_prompt(
+            selected_cats=sel_cats,
+            filters={
+                "min_cagr_1y": min_cagr_1y, "min_cagr_3y": min_cagr_3y,
+                "min_cagr_5y": min_cagr_5y, "max_er": max_er,
+                "min_sharpe": min_sharpe, "min_aum": min_aum,
+            },
+            top_funds=top10,
+            worst_funds=bottom5,
+            cat_summary=cat_summary,
+            total_matching=len(fdf),
+            group=group,
+            sort_by=sort_by,
+            sort_asc=sort_asc,
+        )
+        with st.spinner("🤖 Your advisor is reviewing your selection..."):
+            result = get_claude_analysis(prompt, api_key=api_key or None)
+        st.session_state["af_analysis"] = result
+        st.session_state["af_snapshot"] = f"{group} · {', '.join(sel_cats[:3])} · {len(fdf)} funds · Min 3Y CAGR {min_cagr_3y}%"
 
 if "af_analysis" in st.session_state:
-    if "af_filter_snapshot" in st.session_state:
-        st.caption(f"Analysis generated for: {st.session_state['af_filter_snapshot']}")
+    snap = st.session_state.get("af_snapshot","")
+    if snap:
+        st.markdown(f"<div style='font-size:.75rem;color:#4b5563;margin-bottom:8px;'>📊 Analysis for: <em>{snap}</em></div>", unsafe_allow_html=True)
     st.markdown(f'<div class="analysis-box">{st.session_state["af_analysis"]}</div>', unsafe_allow_html=True)
-    st.download_button("⬇ Download Analysis", st.session_state["af_analysis"], "fund_analysis.md", "text/markdown")
+    fname = f"advisor_analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+    st.download_button("⬇ Download Advisor Report", st.session_state["af_analysis"], fname, "text/markdown")

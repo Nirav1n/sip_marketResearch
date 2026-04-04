@@ -28,12 +28,8 @@ MAINTENANCE:
 
 from datetime import datetime
 
-# Current month string for URL pattern substitution
-_NOW = datetime.now()
-MONTH_YYYY_MM = _NOW.strftime("%Y-%m")          # e.g. "2026-03"
-MONTH_MON_YY  = _NOW.strftime("%b%y").upper()   # e.g. "MAR26"
-MONTH_MMMYYYY = _NOW.strftime("%b%Y").upper()   # e.g. "MAR2026"
-MONTH_MM_YYYY = _NOW.strftime("%m%Y")           # e.g. "032026"
+# Format symbols used in file_pattern templates:
+# {YYYY-MM}, {MON_YY}, {MMMYYYY}, {MM_YYYY}
 
 AMC_REGISTRY = [
 
@@ -42,8 +38,8 @@ AMC_REGISTRY = [
     {
         "amc_id": "hdfc",
         "name": "HDFC Mutual Fund",
-        "portfolio_url": "https://www.hdfcfund.com/statutory-disclosure/portfolio/monthly-portfolio",
-        "file_pattern": f"https://files.hdfcfund.com/s3fs-public/{MONTH_YYYY_MM}/Monthly%20Portfolio%20{MONTH_MON_YY}.xlsx",
+        "portfolio_url": "https://www.hdfcfund.com/statutory-disclosure/portfolio/fortnightly-portfolio",
+        "file_pattern": None,
         "format": "excel_multi",
         "tier": 1,
         "active": True,
@@ -52,9 +48,9 @@ AMC_REGISTRY = [
     {
         "amc_id": "sbi",
         "name": "SBI Mutual Fund",
-        "portfolio_url": "https://www.sbimf.com/en-us/monthly-portfolio-disclosure",
-        "file_pattern": f"https://www.sbimf.com/Uploads/MonthlyPortfolio/Monthly_Portfolio_{MONTH_MMMYYYY}.xlsx",
-        "format": "excel_multi",
+        "portfolio_url": "https://www.sbimf.com/en-us/portfolios",
+        "file_pattern": "https://www.sbimf.com/docs/default-source/scheme-portfolios/all-schemes-monthly-portfolio---as-on-28th-february-2026.xlsx",
+        "format": "excel_single",
         "tier": 1,
         "active": True,
         "notes": "SBI uses MMMYYYY format e.g. MAR2026. Sheet per fund.",
@@ -62,8 +58,8 @@ AMC_REGISTRY = [
     {
         "amc_id": "icici_pru",
         "name": "ICICI Prudential Mutual Fund",
-        "portfolio_url": "https://www.icicipruamc.com/downloads/monthly-portfolio",
-        "file_pattern": f"https://www.icicipruamc.com/downloads/portfolio/Monthly_Portfolio_{MONTH_MON_YY}.xlsx",
+        "portfolio_url": "https://www.icicipruamc.com/media-center/downloads?currentTabFilter=OtherSchemeDisclosures",
+        "file_pattern": None,
         "format": "excel_multi",
         "tier": 1,
         "active": True,
@@ -72,7 +68,7 @@ AMC_REGISTRY = [
     {
         "amc_id": "nippon",
         "name": "Nippon India Mutual Fund",
-        "portfolio_url": "https://mf.nipponindiaim.com/InvestorServices/Pages/MonthlyPortfolioDisclosure.aspx",
+        "portfolio_url": "https://mf.nipponindiaim.com/investor-service/downloads/factsheet-portfolio-and-other-reports",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 1,
@@ -82,7 +78,7 @@ AMC_REGISTRY = [
     {
         "amc_id": "kotak",
         "name": "Kotak Mahindra Mutual Fund",
-        "portfolio_url": "https://www.kotakMF.com/Downloads/MonthlyPortfolio",
+        "portfolio_url": "https://www.kotakmf.com/downloads/monthly-portfolio",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 1,
@@ -102,8 +98,8 @@ AMC_REGISTRY = [
     {
         "amc_id": "axis",
         "name": "Axis Mutual Fund",
-        "portfolio_url": "https://www.axismf.com/downloads/monthly-portfolio",
-        "file_pattern": f"https://www.axismf.com/downloads/monthly-portfolio/Axis_Monthly_Portfolio_{MONTH_MON_YY}.xlsx",
+        "portfolio_url": "https://www.axismf.com/statutory-disclosures",
+        "file_pattern": None,
         "format": "excel_multi",
         "tier": 1,
         "active": True,
@@ -265,7 +261,7 @@ AMC_REGISTRY = [
     {
         "amc_id": "quant",
         "name": "quant Mutual Fund",
-        "portfolio_url": "https://www.quantmutual.com/downloads/portfolio",
+        "portfolio_url": "https://www.quantmutual.com/statutory-disclosures/portfolio-disclosures",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 2,
@@ -455,6 +451,22 @@ def get_amc_names() -> list:
 
 def get_tier1_amcs() -> list:
     return get_active_amcs(tier=1)
+
+def get_amc_url(amc: dict, disclosure_month: str) -> str | None:
+    pattern = amc.get("file_pattern")
+    if not pattern: return None
+    
+    dt = datetime.strptime(disclosure_month, "%Y-%m")
+    fmt = {
+        "{YYYY-MM}": disclosure_month,
+        "{MON_YY}": dt.strftime("%b%y").upper(),
+        "{MMMYYYY}": dt.strftime("%b%Y").upper(),
+        "{MM_YYYY}": dt.strftime("%m%Y"),
+    }
+    url = pattern
+    for k, v in fmt.items():
+        url = url.replace(k, v)
+    return url
 
 
 if __name__ == "__main__":

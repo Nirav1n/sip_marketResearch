@@ -530,6 +530,72 @@ def get_db_stats(db_path: str = DB_PATH) -> dict:
     return stats
 
 
+def get_fund_aum_summary(disclosure_month: str, db_path: str = DB_PATH) -> dict:
+    """
+    Calculate total AUM (market_value_cr) per fund for a specific month.
+    Returns: {scheme_name: total_aum_cr}
+    """
+    conn = get_conn(db_path)
+    res = conn.execute("""
+        SELECT scheme_name, SUM(market_value_cr) as total_aum
+        FROM holdings
+        WHERE disclosure_month = ?
+        GROUP BY scheme_name
+    """, (disclosure_month,)).fetchall()
+    conn.close()
+    return {r["scheme_name"]: round(r["total_aum"], 2) for r in res if r["total_aum"]}
+
+
+def link_holdings_to_metadata(db_path: str = DB_PATH):
+    """
+    Try to populate scheme_code in holdings table by matching scheme_names 
+    with fund_metadata table. Uses exact match first, then fuzzy.
+    """
+    from difflib import get_close_matches
+    conn = get_conn(db_path)
+    
+    # 1. Exact match
+    conn.execute("""
+        UPDATE holdings 
+        SET scheme_code = (
+            SELECT scheme_code FROM fund_metadata 
+            WHERE fund_metadata.scheme_name = holdings.scheme_name
+        )
+        WHERE scheme_code IS NULL
+    """)
+    conn.commit()
+    
+    # 2. Fuzzy match for remaining
+    holdings_to_match = conn.execute(
+        "SELECT DISTINCT scheme_name FROM holdings WHERE scheme_code IS NULL"
+    ).fetchall()
+    
+    if not holdings_to_match:
+        conn.close()
+        return
+
+    metadata = conn.execute("SELECT scheme_name, scheme_code FROM fund_metadata").fetchall()
+    meta_names = [m["scheme_name"] for m in metadata]
+    meta_map = {m["scheme_name"]: m["scheme_code"] for m in metadata}
+    
+    matched = 0
+    for row in holdings_to_match:
+        name = row["scheme_name"]
+        matches = get_close_matches(name, meta_names, n=1, cutoff=0.8)
+        if matches:
+            code = meta_map[matches[0]]
+            conn.execute(
+                "UPDATE holdings SET scheme_code = ? WHERE scheme_name = ?",
+                (code, name)
+            )
+            matched += 1
+            
+    conn.commit()
+    conn.close()
+    if matched:
+        print(f"🔗 Linked {matched} funds via fuzzy matching")
+
+
 if __name__ == "__main__":
     init_db()
     stats = get_db_stats()
