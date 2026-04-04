@@ -107,14 +107,20 @@ for cat in ["Large & Mid Cap","Multi Cap","Flexi Cap","Focused","Value","Contra"
 
 
 def _has_real_data(selected_categories: List[str]) -> tuple[bool, str]:
-    """Check if the DB has real holdings data for the latest month."""
+    """Check if the DB has real holdings data for the latest month.
+    
+    NOTE: We intentionally do NOT filter by category here — the holdings table
+    has no category column and fund_metadata may be empty. If any real data
+    exists we use it and let the user see what's actually scraped.
+    """
     try:
         from holdings_db import get_available_months, get_holdings
         months = get_available_months()
         if not months:
             return False, ""
         latest = months[0]
-        sample = get_holdings(latest, categories=selected_categories)
+        # Check without category filter — categories aren't stored in holdings
+        sample = get_holdings(latest, categories=None)
         if not sample.empty and len(sample) > 10:
             return True, latest
     except Exception:
@@ -126,14 +132,22 @@ def build_holdings_data(selected_categories: List[str]) -> pd.DataFrame:
     """
     Returns holdings DataFrame.
     Uses real DB data if available, falls back to representative with clear labelling.
+    
+    Category filtering is skipped intentionally — the holdings table has no category
+    column. Instead we return all scraped data and add a note about data coverage.
     """
     has_real, latest_month = _has_real_data(selected_categories)
 
     if has_real:
         try:
             from holdings_db import get_holdings
-            df = get_holdings(latest_month, categories=selected_categories)
+            # Do NOT filter by category — fund_metadata may be empty so
+            # the join would return 0 rows. Show all real scraped data.
+            df = get_holdings(latest_month, categories=None)
             df["data_source_type"] = "real"
+            # Tag with a category so conviction table grouping still works
+            if "category" not in df.columns:
+                df["category"] = df.get("amc_name", df.get("amc_id", "Unknown AMC"))
             print(f"✅ Loaded {len(df)} real holdings from DB ({latest_month})")
             return df
         except Exception as e:
