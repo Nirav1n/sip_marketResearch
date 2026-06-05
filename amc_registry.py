@@ -27,113 +27,134 @@ MAINTENANCE:
 """
 
 from datetime import datetime
+import calendar
 
 # Format symbols used in file_pattern templates:
-# {YYYY-MM}, {MON_YY}, {MMMYYYY}, {MM_YYYY}
+# {YYYY-MM}       → "2026-04"
+# {YYYY}          → "2026"
+# {MON_YY}        → "APR26"
+# {MMMYYYY}       → "APR2026"
+# {MM_YYYY}       → "042026"
+# {MMMM_LOWER}    → "april"
+# {LAST_DAY_ORD}  → "30th"  (last day of month with ordinal suffix)
 
 AMC_REGISTRY = [
 
     # ── TIER 1 — Top 10 by AUM (cover ~80% of industry AUM) ──────────────────
+    # STATUS KEY: ✅ confirmed working  🔍 page-scrape fallback  ❌ JS-rendered / blocked
 
     {
         "amc_id": "hdfc",
         "name": "HDFC Mutual Fund",
-        "portfolio_url": "https://www.hdfcfund.com/statutory-disclosure/portfolio/fortnightly-portfolio",
+        # ✅ Server-rendered page — scraper extracts ~109 xlsx links (one per fund)
+        "portfolio_url": "https://www.hdfcfund.com/statutory-disclosure/portfolio/monthly-portfolio",
         "file_pattern": None,
-        "format": "excel_multi",
+        "format": "excel_per_fund",   # one xlsx per fund scheme (not one multi-sheet file)
         "tier": 1,
         "active": True,
-        "notes": "File hosted on files.hdfcfund.com/s3fs-public/YYYY-MM/. Sheet per fund.",
+        "notes": "CDN: files.hdfcfund.com/s3fs-public/{YYYY-MM}/Monthly {FundName} - {DD} {Month} {YYYY}.xlsx. Page scrape returns all 109 fund links.",
     },
     {
         "amc_id": "sbi",
         "name": "SBI Mutual Fund",
+        # ✅ Direct URL confirmed working for Feb/Mar/Apr 2026
         "portfolio_url": "https://www.sbimf.com/en-us/portfolios",
-        "file_pattern": "https://www.sbimf.com/docs/default-source/scheme-portfolios/all-schemes-monthly-portfolio---as-on-28th-february-2026.xlsx",
-        "format": "excel_single",
+        "file_pattern": "https://www.sbimf.com/docs/default-source/scheme-portfolios/all-schemes-monthly-portfolio---as-on-{LAST_DAY_ORD}-{MMMM_LOWER}-{YYYY}.xlsx",
+        "format": "excel_multi",
         "tier": 1,
         "active": True,
-        "notes": "SBI uses MMMYYYY format e.g. MAR2026. Sheet per fund.",
+        "notes": "Single file all schemes. URL uses last day of month + ordinal e.g. '30th-april-2026'.",
     },
     {
         "amc_id": "icici_pru",
         "name": "ICICI Prudential Mutual Fund",
+        # 🔍 JS-rendered SPA. Archive subdomain discovered: archive.icicipruamc.com/download/
+        # Redirect: icicipruamc.com/download/Monthly_Portfolio_{MON}_{YY}.xlsx → archive subdomain
         "portfolio_url": "https://www.icicipruamc.com/media-center/downloads?currentTabFilter=OtherSchemeDisclosures",
         "file_pattern": None,
         "format": "excel_multi",
         "tier": 1,
         "active": True,
-        "notes": "ICICI uses MON_YY format e.g. MAR_26.",
+        "notes": "JS-SPA. Archive CDN at archive.icicipruamc.com/download/Monthly_Portfolio_{MON_YY_TITLE}.xlsx redirected from icicipruamc.com/download/ — needs browser session cookie. Needs Playwright.",
     },
     {
         "amc_id": "nippon",
         "name": "Nippon India Mutual Fund",
-        "portfolio_url": "https://mf.nipponindiaim.com/investor-service/downloads/factsheet-portfolio-and-other-reports",
+        # ✅ Page scrape confirmed — HTML contains relative .xls links in <a> tags
+        # Direct URL pattern: mf.nipponindiaim.com/InvestorServices/FactsheetsDocuments/NIMF-MONTHLY-PORTFOLIO-{DD}-{Month}-{YY}.xls
+        # Month naming is inconsistent (April=full name, Mar/Feb=abbreviated) — use page scrape
+        "portfolio_url": "https://mf.nipponindiaim.com/investor-service/downloads/factsheet-portfolio-and-other-disclosures",
         "file_pattern": None,
-        "format": "excel_detect",
+        "format": "excel_detect",   # .xls (old format), single multi-sheet file
         "tier": 1,
         "active": True,
-        "notes": "Nippon page has direct Excel link. Scrape page to find link.",
+        "notes": "SharePoint site but HTML is server-rendered. Links at /InvestorServices/FactsheetsDocuments/. Page scrape works. File is .xls not .xlsx.",
     },
     {
         "amc_id": "kotak",
         "name": "Kotak Mahindra Mutual Fund",
-        "portfolio_url": "https://www.kotakmf.com/downloads/monthly-portfolio",
+        # ❌ JS-rendered with bot-protection (perfdrive.com). Page scrape fails.
+        "portfolio_url": "https://www.kotakmf.com/knowledge-center/forms-downloads/downloads",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 1,
         "active": True,
-        "notes": "Kotak page has Excel download. Scrape page for link.",
+        "notes": "Bot-protected JS SPA (perfdrive.com). Needs Playwright. Try AMFI portal fallback.",
     },
     {
         "amc_id": "aditya_birla",
         "name": "Aditya Birla Sun Life Mutual Fund",
+        # ❌ JS-rendered SPA. No xlsx links in static HTML.
         "portfolio_url": "https://mutualfund.adityabirlacapital.com/Investor/ResourceCenter/PortfolioDisclosure",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 1,
         "active": True,
-        "notes": "ABSL page. Scrape for Excel link.",
+        "notes": "JS SPA. No static Excel links. Try AMFI portal fallback.",
     },
     {
         "amc_id": "axis",
         "name": "Axis Mutual Fund",
+        # ❌ JS-rendered SPA (Angular). Portfolio files use numeric IDs on axismf.com CDN.
         "portfolio_url": "https://www.axismf.com/statutory-disclosures",
         "file_pattern": None,
         "format": "excel_multi",
         "tier": 1,
         "active": True,
-        "notes": "Axis uses MON_YY e.g. MAR_26.",
+        "notes": "Angular SPA. Files served from axismf.com/1/5/XXXX/XXXX/ numeric CDN paths. Needs Playwright.",
     },
     {
         "amc_id": "mirae",
         "name": "Mirae Asset Mutual Fund",
-        "portfolio_url": "https://www.miraeassetmf.co.in/downloads/monthly-portfolio",
+        # ❌ JS-rendered. Redirect on guessed URLs leads to /downloads/forms (not portfolio).
+        "portfolio_url": "https://www.miraeassetmf.co.in/downloads",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 1,
         "active": True,
-        "notes": "Mirae page. Scrape for Excel link.",
+        "notes": "JS-rendered. Direct URL guesses fail. Try AMFI portal fallback.",
     },
     {
         "amc_id": "dsp",
         "name": "DSP Mutual Fund",
-        "portfolio_url": "https://www.dspim.com/downloads/portfolio-disclosure",
+        # 🔍 Try their mandatory disclosures page
+        "portfolio_url": "https://www.dspim.com/mandatory-disclosures/portfolio",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 1,
         "active": True,
-        "notes": "DSP page. Scrape for Excel link.",
+        "notes": "Try page scrape on mandatory-disclosures/portfolio.",
     },
     {
         "amc_id": "franklin",
         "name": "Franklin Templeton Mutual Fund",
+        # 🔍 Page is server-rendered but no xlsx links found on initial attempt.
         "portfolio_url": "https://www.franklintempletonindia.com/investor/downloads/portfolio-disclosure",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 1,
         "active": True,
-        "notes": "Franklin page. Scrape for Excel link.",
+        "notes": "Server-rendered but Excel links not visible in initial scrape. Try with Referer header.",
     },
 
     # ── TIER 2 — Mid-size AMCs ────────────────────────────────────────────────
@@ -141,22 +162,23 @@ AMC_REGISTRY = [
     {
         "amc_id": "uti",
         "name": "UTI Mutual Fund",
-        "portfolio_url": "https://www.utimf.com/downloads/portfolio-disclosure",
+        "portfolio_url": "https://www.utimf.com/statutory-disclosures/portfolio-disclosure",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 2,
         "active": True,
-        "notes": "UTI page. Scrape for Excel.",
+        "notes": "Try page scrape.",
     },
     {
         "amc_id": "tata",
         "name": "Tata Mutual Fund",
-        "portfolio_url": "https://www.tatamutualfund.com/downloads/portfolio",
+        # 🔍 Server-rendered (Drupal). CDN: betacmsadmin.tatamutualfund.com/system/files/{YYYY-MM}/
+        "portfolio_url": "https://www.tatamutualfund.com/statutory-disclosure/portfolio",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 2,
         "active": True,
-        "notes": None,
+        "notes": "Drupal CMS. CDN path: betacmsadmin.tatamutualfund.com/system/files/. Try page scrape.",
     },
     {
         "amc_id": "edelweiss",
@@ -241,22 +263,23 @@ AMC_REGISTRY = [
     {
         "amc_id": "360one",
         "name": "360 ONE Mutual Fund",
-        "portfolio_url": "https://www.360onemf.com/downloads/portfolio",
+        # ✅ Page scrape confirmed — links at S3 bucket with content hashes (unpredictable, must scrape)
+        "portfolio_url": "https://www.360.one/asset/mutual-funds/downloads/",
         "file_pattern": None,
-        "format": "excel_detect",
+        "format": "excel_multi",
         "tier": 2,
         "active": True,
-        "notes": None,
+        "notes": "S3 bucket: s3.ap-south-1.amazonaws.com/x-web-s3.360.one/IN_MF_MONTHLY_PORTFOLIO_*.xlsx. Hashes unpredictable — page scrape only.",
     },
     {
         "amc_id": "ppfas",
         "name": "PPFAS Mutual Fund",
-        "portfolio_url": "https://www.ppfas.com/downloads/portfolio-disclosure",
+        "portfolio_url": "https://www.ppfas.com/mutual-fund/downloads/portfolio",
         "file_pattern": None,
         "format": "excel_detect",
         "tier": 2,
         "active": True,
-        "notes": "PPFAS (Parag Parikh). Small but high AUM.",
+        "notes": "Parag Parikh — high AUM, popular. Try page scrape.",
     },
     {
         "amc_id": "quant",
@@ -300,8 +323,10 @@ AMC_REGISTRY = [
     {
         "amc_id": "groww",
         "name": "Groww Mutual Fund",
-        "portfolio_url": "https://www.growwmutualfund.com/downloads/portfolio",
-        "file_pattern": None, "format": "excel_detect", "tier": 3, "active": True, "notes": None,
+        # ✅ Page confirmed working — returns direct CDN xlsx link
+        "portfolio_url": "https://www.growwmf.in/statutory-disclosure/portfolio",
+        "file_pattern": None, "format": "excel_multi", "tier": 3, "active": True,
+        "notes": "CDN: assets-netstorage.growwmf.in. Page scrape finds direct xlsx link. 58 sheets per file.",
     },
     {
         "amc_id": "mahindra_manulife",
@@ -452,16 +477,31 @@ def get_amc_names() -> list:
 def get_tier1_amcs() -> list:
     return get_active_amcs(tier=1)
 
+def _ordinal(n: int) -> str:
+    """Return number with ordinal suffix: 1→'1st', 2→'2nd', 30→'30th'."""
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return f"{n}{['th','st','nd','rd','th','th','th','th','th','th'][n % 10]}"
+
+
 def get_amc_url(amc: dict, disclosure_month: str) -> str | None:
     pattern = amc.get("file_pattern")
     if not pattern: return None
-    
+
     dt = datetime.strptime(disclosure_month, "%Y-%m")
+    last_day = calendar.monthrange(dt.year, dt.month)[1]
+    # MON_YY_TITLE = "Apr_26" (used by ICICI Pru archive CDN)
+    mon_yy_title = dt.strftime("%b") + "_" + dt.strftime("%y")
+
     fmt = {
-        "{YYYY-MM}": disclosure_month,
-        "{MON_YY}": dt.strftime("%b%y").upper(),
-        "{MMMYYYY}": dt.strftime("%b%Y").upper(),
-        "{MM_YYYY}": dt.strftime("%m%Y"),
+        "{YYYY-MM}":       disclosure_month,
+        "{YYYY}":          dt.strftime("%Y"),
+        "{MON_YY}":        dt.strftime("%b%y").upper(),
+        "{MMMYYYY}":       dt.strftime("%b%Y").upper(),
+        "{MM_YYYY}":       dt.strftime("%m%Y"),
+        "{MMMM_LOWER}":    dt.strftime("%B").lower(),
+        "{LAST_DAY_ORD}":  _ordinal(last_day),
+        "{MON_YY_TITLE}":  mon_yy_title,
     }
     url = pattern
     for k, v in fmt.items():

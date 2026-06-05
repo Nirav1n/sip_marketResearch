@@ -347,43 +347,45 @@ def parse_excel_to_holdings(
 
 # ─── URL DISCOVERY ────────────────────────────────────────────────────────────
 
-def discover_excel_url(amc: dict, disclosure_month: str) -> Optional[str]:
+def discover_excel_urls(amc: dict, disclosure_month: str) -> list[str]:
     """
-    For AMCs without a known file_pattern, scrape their portfolio page
-    to find the Excel download link.
+    Scrape the AMC's portfolio page and return ALL Excel download links found.
+    Returns a list — for multi-sheet single-file AMCs the list has 1 item;
+    for per-fund AMCs like HDFC it can have 100+ items.
     """
+    from urllib.parse import urlparse
     page_url = amc["portfolio_url"]
+    found: list[str] = []
+
     try:
         resp = requests.get(page_url, headers=HEADERS, timeout=TIMEOUT)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+        base = urlparse(page_url)
 
-        # Find all links
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"].strip()
             href_l = href.lower()
 
-            # Look for Excel/CSV files
             if not any(ext in href_l for ext in [".xlsx", ".xls", ".csv"]):
                 continue
 
-            # Look for portfolio/monthly keywords
             link_text = (a_tag.get_text() + href_l).lower()
             if any(k in link_text for k in ["portfolio", "monthly", "holding", "disclosure"]):
-                # Make absolute URL
                 if href.startswith("http"):
-                    return href
+                    abs_url = href
                 elif href.startswith("/"):
-                    from urllib.parse import urlparse
-                    base = urlparse(page_url)
-                    return f"{base.scheme}://{base.netloc}{href}"
+                    abs_url = f"{base.scheme}://{base.netloc}{href}"
                 else:
-                    return f"{page_url.rstrip('/')}/{href}"
+                    abs_url = f"{page_url.rstrip('/')}/{href}"
+
+                if abs_url not in found:
+                    found.append(abs_url)
 
     except Exception as e:
         print(f"  ⚠️  URL discovery failed for {amc['amc_id']}: {e}")
 
-    return None
+    return found
 
 
 # ─── MAIN SCRAPER ─────────────────────────────────────────────────────────────
@@ -414,116 +416,119 @@ def scrape_amc(
     print(f"\n{'─'*60}")
     print(f"🏢 {amc['name']} [{amc['amc_id']}] (Tier {amc['tier']})")
 
-    # Step 1: Get the file URL
-    file_url = get_amc_url(amc, disclosure_month)
+    # Step 1: Build list of file URLs to download
+    template_url = get_amc_url(amc, disclosure_month)
+    if template_url:
+        file_urls = [template_url]
+        print(f"   🔗 Template URL: {template_url[:80]}...")
+    else:
+        print(f"   🔍 Discovering Excel URLs from {amc['portfolio_url']}")
+        file_urls = [] if dry_run else discover_excel_urls(amc, disclosure_month)
 
-    if not file_url:
-        print(f"   🔍 Discovering Excel URL from {amc['portfolio_url']}")
-        if not dry_run:
-            file_url = discover_excel_url(amc, disclosure_month)
-
-    if not file_url:
+    if not file_urls:
         log["status"] = "failed"
-        log["error_message"] = "Could not find Excel URL"
-        print(f"   ❌ No Excel URL found")
+        log["error_message"] = "Could not find any Excel URL"
+        print(f"   ❌ No Excel URL found — page may be JS-rendered or blocked")
         return log
 
-    log["file_url"] = file_url
-    print(f"   🔗 Candidate URL: {file_url[:80]}...")
+    print(f"   📋 {len(file_urls)} file(s) to process")
+    log["file_url"] = file_urls[0]
 
     if dry_run:
         log["status"] = "dry_run"
         print(f"   ✅ Dry run — skipping download")
         return log
 
-    # Step 2: Download file (with fallback discovery on failure)
-    try:
-        resp = requests.get(file_url, headers=HEADERS, timeout=TIMEOUT)
-        
-        # If direct link fails (404 or 403), try discovery as fallback
-        if resp.status_code in [403, 404]:
-            print(f"   ⚠️  Direct link failed ({resp.status_code}). Trying discovery fallback...")
-            discovered_url = discover_excel_url(amc, disclosure_month)
-            if discovered_url and discovered_url != file_url:
-                print(f"   ✨ Found new URL via discovery: {discovered_url[:80]}...")
-                file_url = discovered_url
-                log["file_url"] = file_url
-                resp = requests.get(file_url, headers=HEADERS, timeout=TIMEOUT)
-        
-        resp.raise_for_status()
+    # Step 2 + 3: Download and parse each file, accumulate all holdings
+    all_holdings: list[dict] = []
+    safe_name = re.sub(r"[^\w]", "_", amc["amc_id"])
 
-        file_bytes = resp.content
-        file_size_kb = len(file_bytes) / 1024
-        log["file_size_kb"] = round(file_size_kb, 1)
+    for idx, file_url in enumerate(file_urls):
+        # For per-fund AMCs (HDFC etc.) add a small delay between files
+        if idx > 0:
+            time.sleep(0.5)
 
-        if file_size_kb < 5:
-            log["status"] = "failed"
-            log["error_message"] = f"File too small ({file_size_kb:.1f} KB) — likely error page"
-            print(f"   ❌ File too small: {file_size_kb:.1f} KB")
-            return log
+        try:
+            resp = requests.get(file_url, headers=HEADERS, timeout=TIMEOUT)
 
-        print(f"   📥 Downloaded: {file_size_kb:.1f} KB")
+            # On 404/403 with a template URL, try page-scrape fallback once
+            if resp.status_code in [403, 404] and template_url:
+                print(f"   ⚠️  Template URL returned {resp.status_code}. Trying page-scrape fallback...")
+                fallback_urls = discover_excel_urls(amc, disclosure_month)
+                if fallback_urls:
+                    file_urls = fallback_urls
+                    log["file_url"] = fallback_urls[0]
+                    file_url = fallback_urls[0]
+                    resp = requests.get(file_url, headers=HEADERS, timeout=TIMEOUT)
 
-        # Detect format
-        url_l = file_url.lower()
-        if ".xlsx" in url_l: fmt = "xlsx"
-        elif ".xls" in url_l: fmt = "xls"
-        elif ".csv" in url_l: fmt = "csv"
-        else: fmt = "xlsx"  # assume xlsx
-        log["file_format"] = fmt
+            resp.raise_for_status()
 
-        # Save raw file
-        safe_name = re.sub(r"[^\w]", "_", amc["amc_id"])
-        raw_path = RAW_DIR / f"{safe_name}_{disclosure_month}.{fmt}"
-        raw_path.write_bytes(file_bytes)
-        log["raw_file_path"] = str(raw_path)
-        print(f"   💾 Saved to {raw_path}")
+            file_bytes = resp.content
+            file_size_kb = len(file_bytes) / 1024
 
-    except requests.exceptions.RequestException as e:
-        log["status"] = "failed"
-        log["error_message"] = f"Download error: {e}"
-        print(f"   ❌ Download failed: {e}")
-        return log
+            if file_size_kb < 5:
+                print(f"   ⚠️  Skipping {file_url[-50:]} — too small ({file_size_kb:.1f} KB)")
+                continue
 
-    # Step 3: Parse
-    try:
-        if fmt == "csv":
-            # Simple CSV parsing
-            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
-            # TODO: add CSV parser path
-            log["status"] = "partial"
-            log["error_message"] = "CSV format — basic parse only"
-            return log
+            # Detect format
+            url_l = file_url.lower()
+            if ".xlsx" in url_l:   fmt = "xlsx"
+            elif ".xls" in url_l:  fmt = "xls"
+            elif ".csv" in url_l:  fmt = "csv"
+            else:                  fmt = "xlsx"
+            log["file_format"] = fmt
 
-        holdings, warnings = parse_excel_to_holdings(
-            file_bytes, amc["amc_id"], amc["name"], disclosure_month, fmt
-        )
+            # Save raw file (append index for per-fund AMCs)
+            suffix = f"_{idx}" if len(file_urls) > 1 else ""
+            raw_path = RAW_DIR / f"{safe_name}_{disclosure_month}{suffix}.{fmt}"
+            raw_path.write_bytes(file_bytes)
 
-        if warnings:
+            if len(file_urls) == 1:
+                print(f"   📥 Downloaded: {file_size_kb:.1f} KB → {raw_path.name}")
+                log["file_size_kb"] = round(file_size_kb, 1)
+                log["raw_file_path"] = str(raw_path)
+
+            # Parse
+            if fmt == "csv":
+                log["status"] = "partial"
+                log["error_message"] = "CSV format — basic parse only"
+                continue
+
+            holdings, warnings = parse_excel_to_holdings(
+                file_bytes, amc["amc_id"], amc["name"], disclosure_month, fmt
+            )
             for w in warnings:
                 print(f"   ⚠️  {w}")
+            all_holdings.extend(holdings)
 
-        if not holdings:
-            log["status"] = "failed"
-            log["error_message"] = "No holdings rows parsed from file"
-            print(f"   ❌ No holdings found in file")
-            return log
+        except requests.exceptions.RequestException as e:
+            print(f"   ⚠️  Download failed for file {idx+1}: {e}")
+            continue
 
-        # Count unique schemes
-        schemes = set(h["scheme_name"] for h in holdings)
+    # Step 4: Progress summary + DB insert
+    if len(file_urls) > 1:
+        print(f"   📥 Downloaded {len(file_urls)} files, parsed {len(all_holdings)} holding rows")
+
+    if not all_holdings:
+        log["status"] = "failed"
+        log["error_message"] = "No holdings rows parsed from any file"
+        print(f"   ❌ No holdings found")
+        return log
+
+    try:
+        schemes = set(h["scheme_name"] for h in all_holdings)
         log["funds_parsed"] = len(schemes)
-        print(f"   📊 Parsed {len(holdings)} holdings across {len(schemes)} schemes")
+        print(f"   📊 {len(all_holdings)} holdings across {len(schemes)} schemes")
 
-        # Step 4: Store to DB
-        inserted = insert_holdings(holdings)
+        inserted = insert_holdings(all_holdings)
         log["holdings_count"] = inserted
         log["status"] = "success"
         print(f"   ✅ Inserted {inserted} rows to DB")
 
     except Exception as e:
         log["status"] = "failed"
-        log["error_message"] = f"Parse error: {e}"
-        print(f"   ❌ Parse error: {e}")
+        log["error_message"] = f"DB insert error: {e}"
+        print(f"   ❌ DB insert error: {e}")
         import traceback
         traceback.print_exc()
 
