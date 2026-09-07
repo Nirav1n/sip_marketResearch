@@ -11,12 +11,18 @@ import re
 import os
 import json
 import time
+import numpy as np
 import requests
 from datetime import datetime, timedelta
-from typing import List, Dict
+from typing import List, Dict, Any, Optional
+from mf_api_client import MfDataClient
+
 
 CACHE_DIR = "mf_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+# Initialize API Client
+api_client = MfDataClient()
 
 
 def get_dynamic_quarters(n: int = 8) -> List[str]:
@@ -100,10 +106,11 @@ UNIVERSE = {
         ("Delhivery","DELHIVERY"),("Birlasoft","BSOFT"),
     ],
 }
-for cat in ["Large & Mid Cap","Multi Cap","Flexi Cap","Focused","Value","Contra",
-            "ELSS","Sectoral","Thematic","Aggressive Hybrid","Balanced Advantage",
-            "Multi Asset","Index Fund","Dividend Yield"]:
-    UNIVERSE[cat] = UNIVERSE["Large Cap"][:20]
+from data_fetcher import EQUITY_CATEGORIES, CATEGORY_MAP
+
+for cat in EQUITY_CATEGORIES:
+    if cat not in UNIVERSE:
+        UNIVERSE[cat] = UNIVERSE["Large Cap"][:20]
 
 
 def _has_real_data(selected_categories: List[str]) -> tuple[bool, str]:
@@ -114,19 +121,61 @@ def _has_real_data(selected_categories: List[str]) -> tuple[bool, str]:
     exists we use it and let the user see what's actually scraped.
     """
     try:
-        from holdings_db import get_available_months, get_holdings
+        from holdings_db import get_available_months
         months = get_available_months()
         if not months:
             return False, ""
         latest = months[0]
-        # Check without category filter — categories aren't stored in holdings
-        sample = get_holdings(latest, categories=None)
-        if not sample.empty and len(sample) > 10:
-            return True, latest
+        # Just check if ANY real data exists in holdings table
+        return True, latest
     except Exception:
         pass
     return False, ""
 
+
+def get_data_status(categories: List[str]) -> Dict[str, Any]:
+    """Return data health metrics for selected categories."""
+    from data_fetcher import load_fund_data
+    from holdings_db import get_available_months, get_conn
+    
+    try:
+        # 1. Use the SAME registry as the 'All Funds' page for parity
+        # BATCH MATCHING: Case-insensitive & Trim-safe
+        master_df = load_fund_data()
+        selected_upper = [c.upper().strip() for c in categories]
+        target_codes = master_df[master_df["category"].str.upper().str.strip().isin(selected_upper)]["scheme_code"].unique().tolist()
+        
+        target_len = len(target_codes)
+        latest = get_available_months()[0] if get_available_months() else None
+        
+        conn = get_conn()
+        # COUNT REAL DATA (BANNER)
+        synced_h = 0
+        if target_codes and latest:
+            placeholders = ', '.join(['?'] * len(target_codes))
+            h_query = f"SELECT COUNT(DISTINCT scheme_code) FROM holdings WHERE disclosure_month = ? AND scheme_code IN ({placeholders})"
+            synced_h = conn.execute(h_query, [latest] + target_codes).fetchone()[0]
+        
+        # 3. Overall stats
+        total_rows = conn.execute("SELECT count(*) FROM holdings").fetchone()[0]
+        conn.close()
+        
+        return {
+            "has_real_data": synced_h > 0,
+            "latest_month": latest,
+            "total_funds_in_cat": target_len,
+            "synced_funds_in_cat": synced_h,
+            "total_holdings": total_rows,
+        }
+    except Exception as e:
+        print(f"⚠️ Status check failed: {e}")
+        return {
+            "has_real_data": False, 
+            "latest_month": "N/A",
+            "total_funds_in_cat": 0,
+            "synced_funds_in_cat": 0,
+            "total_holdings": 0
+        }
 
 def build_holdings_data(selected_categories: List[str]) -> pd.DataFrame:
     """
@@ -137,25 +186,208 @@ def build_holdings_data(selected_categories: List[str]) -> pd.DataFrame:
     column. Instead we return all scraped data and add a note about data coverage.
     """
     has_real, latest_month = _has_real_data(selected_categories)
-
+    
+    # FORCED RE-CHECK: If categories changed, re-query latest for those categories
     if has_real:
         try:
+            from data_fetcher import load_fund_data
             from holdings_db import get_holdings
-            # Do NOT filter by category — fund_metadata may be empty so
-            # the join would return 0 rows. Show all real scraped data.
-            df = get_holdings(latest_month, categories=None)
-            df["data_source_type"] = "real"
-            # Tag with a category so conviction table grouping still works
-            if "category" not in df.columns:
-                df["category"] = df.get("amc_name", df.get("amc_id", "Unknown AMC"))
-            print(f"✅ Loaded {len(df)} real holdings from DB ({latest_month})")
-            return df
-        except Exception as e:
-            print(f"⚠️ DB load failed: {e} — using representative data")
 
-    # Fallback: representative data
-    print("ℹ️ Using representative holdings (no real DB data yet)")
+            # Filter holdings to match the 'All Funds' registry (Case-Insensitive)
+            master_df = load_fund_data()
+            selected_upper = [c.upper().strip() for c in selected_categories]
+            target_codes = master_df[master_df["category"].str.upper().str.strip().isin(selected_upper)]["scheme_code"].unique()
+            target_codes = [str(c) for c in target_codes if c is not None]
+
+            # Direct code filtering is more robust than category name join
+            df = get_holdings(latest_month, categories=selected_categories, scheme_codes=target_codes)
+            if not df.empty:
+                df["data_source_type"] = "real"
+                return df
+        except Exception as e:
+            print(f"⚠️ DB load failed: {e}")
+
+    # Fallback: representative holdings (no real DB data yet)
     return _build_representative_holdings(selected_categories)
+
+
+def sync_popular_funds():
+    """Sync target funds to bootstrap the DB."""
+    # Top ~20 Large Cap, ~20 Mid Cap, etc.
+    popular_keywords = ["Bluechip", "Large Cap", "Mid Cap", "Small Cap", "Flexi Cap", "ELSS", "Index"]
+    from data_fetcher import fetch_universal_universe
+    univ = fetch_universal_universe()
+    if univ.empty: return
+    
+    # Select top 15 from each popular category
+    for kw in popular_keywords:
+        subset = univ[univ["scheme_name"].str.contains(kw, case=False)].head(15)
+        for _, f in subset.iterrows():
+            try:
+                sync_fund(f["scheme_name"], f.get("scheme_code"))
+                time.sleep(1.0)
+            except:
+                continue
+
+def sync_categories(categories: List[str], limit: int = 10):
+    """Sync all missing funds for the selected categories."""
+    for cat in categories:
+        sync_missing_for_month(cat)
+
+def sync_missing_for_month(category: str, month: Optional[str] = None):
+    """Sync holdings for all funds in a category that are missing data for the month."""
+    if not month:
+        month = datetime.now().strftime("%Y-%m")
+    
+    from data_fetcher import get_conn
+    conn = get_conn()
+    
+    # Identify funds in this category with NO holdings for this month
+    query = """
+    SELECT fm.scheme_name, fm.scheme_code
+    FROM fund_metadata fm
+    LEFT JOIN holdings h ON fm.scheme_code = h.scheme_code AND h.disclosure_month = ?
+    WHERE fm.category = ? AND h.id IS NULL
+    """
+    missing = pd.read_sql_query(query, conn, params=[month, category])
+    conn.close()
+    
+    if missing.empty:
+        print(f"✅ Category '{category}' is already fully synced for {month}")
+        return
+        
+    print(f"🔄 Delta Syncing {len(missing)} missing funds for '{category}' in {month}...")
+    for _, fund in missing.iterrows():
+        try:
+            sync_fund(fund["scheme_name"], fund["scheme_code"])
+            time.sleep(2.0) # Conservative rate limit for background sync
+        except Exception as e:
+            print(f"  ⚠️ Failed for {fund['scheme_name']}: {e}")
+            continue
+
+def sync_fund_by_name(name: str):
+    """Legacy wrapper for backward compatibility."""
+    sync_fund(name)
+
+def sync_fund(name: str, code: Optional[str] = None):
+    """Search for a fund and sync its metadata and holdings."""
+    print(f"🔍 Syncing '{name}'...")
+    api_client = MfDataClient()
+    
+    amfi_code = code
+    family_id = None
+    
+    # 1. Resolve family_id (needed for holdings)
+    if amfi_code:
+        details = api_client.get_scheme_details(amfi_code)
+        if details and "family_id" in details:
+            family_id = details["family_id"]
+        else:
+            results = api_client.search_schemes(name)
+            if results: family_id = results[0].get("family_id")
+    else:
+        results = api_client.search_schemes(name)
+        if not results:
+            print(f"⚠️ No results found for '{name}'")
+            return
+        top = results[0]
+        amfi_code = top.get("amfi_code")
+        family_id = top.get("family_id")
+
+    if not family_id:
+        print(f"⚠️ Could not resolve family_id for {name}")
+        return
+
+    # 2. Sync Metadata & Performance
+    details = api_client.get_scheme_details(amfi_code)
+    if details:
+        from holdings_db import upsert_fund_metadata, upsert_performance
+        
+        # Prepare metadata record
+        meta_record = {
+            "scheme_code": amfi_code,
+            "scheme_name": details.get("name"),
+            "family_id": family_id,
+            "amc_id": details.get("amc_slug"),
+            "amc_name": details.get("amc_name"),
+            "amfi_category": details.get("category"),
+            "category": details.get("category"),
+            "nav": details.get("nav"),
+            "nav_date": details.get("nav_date"),
+            "isin_growth": details.get("isin"),
+            "isin_div": None,
+        }
+        upsert_fund_metadata([meta_record])
+        print(f"✅ Metadata synced for {amfi_code}")
+
+        # Performance record — use None for any missing/zero value so the UI
+        # shows "Awaiting Sync" rather than a misleading 0.0
+        perf = details.get("returns", {})
+        aum_raw = details.get("aum")
+        aum_val = (float(aum_raw) / 1e7) if aum_raw else None
+
+        def _real(v):
+            """Return v if it is a non-zero number, else None."""
+            try:
+                f = float(v)
+                return f if f != 0.0 else None
+            except (TypeError, ValueError):
+                return None
+
+        perf_record = {
+            "scheme_code": amfi_code,
+            "cagr_1y":       _real(perf.get("return_1y")),
+            "cagr_3y":       _real(perf.get("return_3y")),
+            "cagr_5y":       _real(perf.get("return_5y")),
+            "cagr_10y":      _real(perf.get("return_inception")),
+            "volatility":    _real(details.get("std_dev")),
+            "sharpe_ratio":  _real(details.get("sharpe")),
+            "max_drawdown":  None,
+            "expense_ratio": _real(details.get("expense_ratio")),
+            "aum_cr":        aum_val,
+            "aum_source": "mfdata.in API",
+            "cagr_source": "mfdata.in API",
+            "er_source": "mfdata.in API",
+            "composite_score": None,
+            "nav_data_points": None
+        }
+        upsert_performance([perf_record])
+        print(f"✅ Performance synced for {amfi_code}")
+
+    # 3. Sync Holdings
+    holdings_data = api_client.get_family_holdings(family_id)
+    if holdings_data:
+        from holdings_db import insert_holdings
+        equity = holdings_data.get("equity_holdings", [])
+        rows = []
+        month = holdings_data.get("month", datetime.now().strftime("%Y-%m"))
+        amc_slug = details.get("amc_slug") if details else "unknown"
+        amc_name = details.get("amc_name") if details else "Unknown AMC"
+        
+        for h in equity:
+            rows.append({
+                "disclosure_month": month,
+                "amc_id": amc_slug,
+                "amc_name": amc_name,
+                "scheme_name": details.get("name") if details else name,
+                "scheme_code": amfi_code,
+                "stock_name": h.get("stock_name"),
+                "isin": h.get("isin"),
+                "ticker": h.get("ticker"),
+                "sector": h.get("sector"),
+                "sector_normalised": h.get("sector"),
+                "asset_type": "Equity",
+                "quantity": h.get("quantity"),
+                "market_value_cr": (h.get("market_value") or 0) / 1e7,
+                "weight_pct": h.get("weight") or 0.0,
+                "rating": None,
+                "listing": None,
+                "data_source": "mfdata.in API",
+            })
+        
+        if rows:
+            insert_holdings(rows)
+            print(f"✅ Synced {len(rows)} holdings for {name}")
 
 
 def _build_representative_holdings(selected_categories: List[str]) -> pd.DataFrame:
@@ -191,22 +423,48 @@ def _build_representative_holdings(selected_categories: List[str]) -> pd.DataFra
 
 
 def build_stock_conviction_table(holdings_df: pd.DataFrame, selected_categories: List[str]) -> pd.DataFrame:
-    if holdings_df.empty: return pd.DataFrame()
-    fn_col = "scheme_name" if "scheme_name" in holdings_df.columns else "fund_name"
-    total_funds = holdings_df[fn_col].nunique()
+    # 1. Join holdings with AUM from fund_performance
+    from holdings_db import get_conn
+    conn = get_conn()
+    perf = pd.read_sql_query("SELECT scheme_code, aum_cr FROM fund_performance", conn)
+    conn.close()
+    
+    # Robustness: ensure we have columns or fill with Unknown
+    df = holdings_df.copy()
+    df["stock_name"] = df["stock_name"].fillna("Unknown Stock")
+    df["ticker"] = df["ticker"].fillna("")
+    df["sector_normalised"] = df["sector_normalised"].fillna(df.get("sector", "Other"))
+    df["weight_pct"] = pd.to_numeric(df["weight_pct"], errors="coerce").fillna(0)
+    
+    # Merge AUM into holdings
+    df = df.merge(perf, on="scheme_code", how="left")
+    df["aum_cr"] = df["aum_cr"].fillna(500.0) # Conservative fallback for missing AUM
+    
+    fn_col = "scheme_name" if "scheme_name" in df.columns else "fund_name"
+    total_funds = df[fn_col].nunique()
+    total_aum = df.drop_duplicates(fn_col)["aum_cr"].sum()
 
-    grp = holdings_df.groupby(["stock_name","ticker","sector_normalised"]).agg(
+    # Aggregation with AUM weighting
+    grp = df.groupby(["stock_name","ticker","sector_normalised"]).agg(
         fund_count=(fn_col,"nunique"),
+        aum_sum=("aum_cr", "sum"),
         categories=("category", lambda x: " | ".join(sorted(x.dropna().unique()))),
         avg_weight=("weight_pct","mean"),
         max_weight=("weight_pct","max"),
-        amc_count=("amc_id","nunique") if "amc_id" in holdings_df.columns else ("stock_name","count"),
+        amc_count=("amc_id","nunique") if "amc_id" in df.columns else ("stock_name","count"),
     ).reset_index()
 
-    grp["funds_pct"] = (grp["fund_count"]/total_funds*100).round(1)
+    grp["funds_pct"] = (grp["fund_count"]/total_funds*100).round(1) if total_funds > 0 else 0
+    grp["aum_pct"] = (grp["aum_sum"]/total_aum*100).round(1) if total_aum > 0 else 0
+    
+    # Overwrite conviction with AUM-Weighted score
     mp = total_funds * grp["avg_weight"].max()
     grp["conviction_score"] = ((grp["fund_count"]*grp["avg_weight"])/mp*100).round(1) if mp>0 else grp["funds_pct"]
-    grp["conviction_label"] = grp["funds_pct"].apply(
+    
+    # Boost factor based on AUM influence
+    grp["conviction_score"] = (grp["conviction_score"] * 0.7 + grp["aum_pct"] * 0.3).round(1)
+    
+    grp["conviction_label"] = grp["conviction_score"].apply(
         lambda p: "🔴 Universal" if p>=80 else ("🟠 High" if p>=50 else ("🟡 Moderate" if p>=25 else "🟢 Selective"))
     )
     grp = grp.sort_values("fund_count",ascending=False).reset_index(drop=True)
@@ -263,22 +521,3 @@ def build_rotation_data(selected_categories: List[str]) -> pd.DataFrame:
     trend["trend_label"]=trend["trend"].apply(
         lambda x:"📈 Accumulating" if x>=3 else("📉 Distributing" if x<=-3 else "➡️ Stable"))
     return df.merge(trend[["ticker","trend","trend_label"]],on="ticker",how="left")
-
-
-def get_data_status(selected_categories: List[str]) -> dict:
-    """Return current data status for display in dashboard."""
-    has_real, latest_month = _has_real_data(selected_categories)
-    try:
-        from holdings_db import get_scrape_status, get_db_stats
-        stats = get_db_stats()
-        return {
-            "has_real_data": has_real,
-            "latest_month": latest_month,
-            "total_holdings": stats.get("holdings", 0),
-            "amcs_with_data": stats.get("holdings_amcs", 0),
-            "months_stored": stats.get("holdings_months", []),
-            "source_type": "real" if has_real else "representative",
-        }
-    except:
-        return {"has_real_data": False, "latest_month": None,
-                "source_type": "representative", "total_holdings": 0}
