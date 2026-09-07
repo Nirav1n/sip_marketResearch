@@ -28,6 +28,8 @@ def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=-32000")   # 32 MB page cache
+    conn.execute("PRAGMA optimize")            # refresh query planner stats
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -102,13 +104,15 @@ def init_db(db_path: str = DB_PATH):
             UNIQUE(disclosure_month, scheme_code, isin, stock_name)
         )
         """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_h_month   ON holdings(disclosure_month)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_h_code    ON holdings(scheme_code)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_h_stock   ON holdings(stock_name)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_h_lookup  ON holdings(disclosure_month, scheme_code)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_h_isin    ON holdings(isin)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_h_ticker  ON holdings(ticker)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_h_amc     ON holdings(amc_id)")
+        # Composite lookup — covers fund-level and month-level queries
+        c.execute("CREATE INDEX IF NOT EXISTS idx_h_lookup     ON holdings(disclosure_month, scheme_code)")
+        # Conviction table — covers month+stock GROUP BY without touching fund_metadata
+        c.execute("CREATE INDEX IF NOT EXISTS idx_h_conviction ON holdings(disclosure_month, stock_name, weight_pct)")
+        # Point lookups
+        c.execute("CREATE INDEX IF NOT EXISTS idx_h_stock      ON holdings(stock_name)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_h_isin       ON holdings(isin)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_h_ticker     ON holdings(ticker)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_h_amc        ON holdings(amc_id)")
 
         c.execute("""
         CREATE TABLE IF NOT EXISTS conviction_cache (
@@ -143,8 +147,8 @@ def init_db(db_path: str = DB_PATH):
             UNIQUE(scheme_code, nav_date)
         )
         """)
-        c.execute("CREATE INDEX IF NOT EXISTS idx_nav_code ON nav_daily(scheme_code)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_nav_date ON nav_daily(nav_date)")
+        # UNIQUE(scheme_code, nav_date) is already the primary lookup pattern;
+        # the autoindex covers it — no additional indexes needed for nav_daily.
 
         c.execute("""
         CREATE TABLE IF NOT EXISTS fund_performance (
