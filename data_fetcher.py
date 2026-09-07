@@ -76,6 +76,7 @@ EQ_KW = list(CATEGORY_MAP.keys()) + [
 # ─── AMC PREFIX MAP — all 50 AMFI AMCs ───────────────────────────────────────
 
 AMC_PREFIX_MAP = {
+    # ── Core AMCs (AMFI-registered) ──────────────────────────────────────────
     "360 ONE":               "360 ONE Mutual Fund",
     "Aditya Birla Sun Life": "Aditya Birla Sun Life Mutual Fund",
     "Angel One":             "Angel One Mutual Fund",
@@ -91,6 +92,8 @@ AMC_PREFIX_MAP = {
     "Edelweiss":             "Edelweiss Mutual Fund",
     "Franklin India":        "Franklin Templeton Mutual Fund",
     "Franklin Templeton":    "Franklin Templeton Mutual Fund",
+    "Franklin":              "Franklin Templeton Mutual Fund",
+    "Templeton":             "Franklin Templeton Mutual Fund",
     "Groww":                 "Groww Mutual Fund",
     "HDFC":                  "HDFC Mutual Fund",
     "Helios":                "Helios Mutual Fund",
@@ -99,11 +102,13 @@ AMC_PREFIX_MAP = {
     "Invesco India":         "Invesco Mutual Fund",
     "ITI":                   "ITI Mutual Fund",
     "Jio BlackRock":         "Jio BlackRock Mutual Fund",
+    "JioBlackRock":          "Jio BlackRock Mutual Fund",
     "JM Financial":          "JM Financial Mutual Fund",
     "JM":                    "JM Financial Mutual Fund",
     "Kotak":                 "Kotak Mahindra Mutual Fund",
     "LIC":                   "LIC Mutual Fund",
     "Mahindra Manulife":     "Mahindra Manulife Mutual Fund",
+    "MahindraManulife":      "Mahindra Manulife Mutual Fund",
     "Mirae Asset":           "Mirae Asset Mutual Fund",
     "Motilal Oswal":         "Motilal Oswal Mutual Fund",
     "Navi":                  "Navi Mutual Fund",
@@ -127,12 +132,31 @@ AMC_PREFIX_MAP = {
     "UTI":                   "UTI Mutual Fund",
     "WhiteOak Capital":      "WhiteOak Capital Mutual Fund",
     "Zerodha":               "Zerodha Mutual Fund",
+    # ── Newer / variant-name AMCs ────────────────────────────────────────────
+    "Abakkus":               "Abakkus Mutual Fund",
+    "AlphaGrep":             "AlphaGrep Mutual Fund",
+    "ASK":                   "ASK Mutual Fund",
+    "BHARAT Bond":           "Edelweiss Mutual Fund",   # BHARAT Bond ETF FOFs managed by Edelweiss
+    "The Wealth":            "The Wealth Company Mutual Fund",
+    # ── Legacy brand names (pre-rebrand funds still in AMFI) ────────────────
+    "Reliance":              "Nippon India Mutual Fund",  # Nippon India rebranded from Reliance in 2019
 }
 
+# Build a lowercase lookup once at import time for O(1) case-insensitive match
+_AMC_PREFIX_LOWER: list = sorted(
+    [(k.lower(), v) for k, v in AMC_PREFIX_MAP.items()],
+    key=lambda x: -len(x[0]),   # longest prefix first
+)
+
+
 def _extract_amc(scheme_name: str) -> str:
-    """Extract AMC name from scheme name using longest-prefix match."""
-    for prefix, amc_name in sorted(AMC_PREFIX_MAP.items(), key=lambda x: -len(x[0])):
-        if scheme_name.startswith(prefix):
+    """
+    Extract AMC name from scheme name using case-insensitive longest-prefix match.
+    Handles AMFI's inconsistent casing (ALL CAPS, Title Case, mixed).
+    """
+    sl = scheme_name.lower()
+    for prefix_lower, amc_name in _AMC_PREFIX_LOWER:
+        if sl.startswith(prefix_lower):
             return amc_name
     return "Unknown AMC"
 
