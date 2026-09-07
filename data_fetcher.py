@@ -297,10 +297,18 @@ def enrich_fund(
     code    = str(row["scheme_code"])
     perf    = (perf_summary or {}).get(code, {})
 
+    def _nonzero(v):
+        """Treat 0 / 0.0 stored by old sync as missing data."""
+        try:
+            f = float(v)
+            return f if f != 0.0 else None
+        except (TypeError, ValueError):
+            return None
+
     # 1. Real CAGR
-    cagr_1y = perf.get("cagr_1y")
-    cagr_3y = perf.get("cagr_3y")
-    cagr_5y = perf.get("cagr_5y")
+    cagr_1y = _nonzero(perf.get("cagr_1y"))
+    cagr_3y = _nonzero(perf.get("cagr_3y"))
+    cagr_5y = _nonzero(perf.get("cagr_5y"))
 
     if cagr_3y is None and allow_live_calc:
         try:
@@ -316,15 +324,15 @@ def enrich_fund(
     cagr_src = "Factual Registry" if cagr_3y is not None else "Awaiting Sync"
 
     # 2. AUM — None if missing, no fallback
-    aum_cr = perf.get("aum_cr")  # None if not synced
+    aum_cr = _nonzero(perf.get("aum_cr"))
     aum_src = "mfdata.in" if aum_cr is not None else "Sync Pending"
 
     # 3. Expense ratio
-    er     = perf.get("expense_ratio")
+    er     = _nonzero(perf.get("expense_ratio"))
     er_src = "Factsheet Verified" if er is not None else "Varies by Plan"
 
     # 4. Volatility — None if not in DB. Never hardcode.
-    vol = perf.get("volatility")  # None if unsynced
+    vol = _nonzero(perf.get("volatility"))
 
     # 5. Sharpe — only computable when both vol and cagr_3y are real
     if vol and vol > 0 and cagr_3y is not None:
